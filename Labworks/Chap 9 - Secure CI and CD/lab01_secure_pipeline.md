@@ -23,6 +23,21 @@ In this lab, you will learn how to build a basic CI/CD pipeline following the "P
 *   A GitHub account.
 *   Basic knowledge of Git and the command line.
 *   An IDE (VS Code is recommended).
+
+### Getting Started
+Download the starter project and set up your own repository:
+1.  Download the starter code from: https://github.com/sonnt5/Baked-Sec-Secure-SDLC-E01-KDP/tree/main/Labworks/Chap%209%20-%20Secure%20CI%20and%20CD/secure-ci-lab
+2.  Create a **new repository** on your GitHub account (e.g., `secure-ci-lab`).
+3.  Initialize git and push the starter code:
+```bash
+cd secure-ci-lab
+git init
+git remote add origin https://github.com/<YOUR_USERNAME>/secure-ci-lab.git
+git add .
+git commit -m "Initial commit: starter code for Lab 1"
+git branch -M main
+git push -u origin main
+```
 *   Node.js installed (to run code locally if needed).
 
 ## 3. Scenario
@@ -188,6 +203,6 @@ Add the Semgrep tool to scan for code vulnerabilities. Add a step to the `securi
 *   Combining multiple gates (secrets + SAST + linting) provides **Defense in Depth** — if one gate misses an issue, another can catch it.
 
 ## 6. Answer Key / Solution Repository
-- **Solution code:** See the `secure-ci-lab/` folder in this chapter's Labworks directory
-- **`secure-ci-lab/`:** Complete working solution (all security gates pass) — contains `app.js`, `.github/workflows/ci.yml`, `.eslintrc.json`, etc.
-- **`secure-ci-lab/vulnerable-branch/`:** Intentionally vulnerable code for testing gates — contains `config.js` (fake AWS key) and modified `app.js` (with `eval()`)
+- **Solution branch:** [`chap9-solution`](https://github.com/sonnt5/Baked-Sec-Secure-SDLC-E01-KDP/tree/chap9-solution/Labworks/Chap%209%20-%20Secure%20CI%20and%20CD/secure-ci-lab) — complete working solution with all security gates passing
+- **`secure-ci-lab/`:** Contains `app.js`, `.github/workflows/ci.yml`, `.eslintrc.json`, `package.json`, etc.
+- **`secure-ci-lab/vulnerable-branch/`:** Intentionally vulnerable code for testing gates — `config.js` (fake AWS key) and modified `app.js` (with `eval()`)

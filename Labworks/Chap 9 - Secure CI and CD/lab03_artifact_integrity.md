@@ -24,6 +24,11 @@ Practice protecting the supply chain at the packaging stage (Build & Package). Y
 *   A Docker Hub account (or GHCR - GitHub Container Registry).
 *   GitHub Actions.
 
+### Getting Started
+If you haven't completed Lab 1, download the starter project and set up your own repository:
+1.  Download the starter code from: https://github.com/sonnt5/Baked-Sec-Secure-SDLC-E01-KDP/tree/main/Labworks/Chap%209%20-%20Secure%20CI%20and%20CD/secure-ci-lab
+2.  Create a **new repository** on your GitHub account and push the starter code (see Lab 1, Getting Started for detailed steps).
+
 ## 3. Scenario
 Your company requires that every Docker Image must have an "identity card" (SBOM) and a "seal" (Signature) from the development team before being deployed to Production. Currently, any image pushed to the container registry can be deployed — there is no way to verify **who** built it, **what** is inside it, or whether it was **tampered with** after building. This means a compromised CI runner, a rogue insider, or a man-in-the-middle attack could inject malicious code into a production image without detection.
 
@@ -175,6 +180,7 @@ This demonstrates how a deployment system (like ArgoCD or a Kubernetes Admission
 *   Combining SBOM + Signing + Verification creates an end-to-end **chain of trust** from source code to production deployment.
 
 ## 6. Answer Key / Solution Repository
-- **Solution code:** Based on the `secure-ci-lab/` folder — add the `Dockerfile` and `build-and-sign` job to `ci.yml` as described in the steps above
+- **Solution branch:** [`chap9-solution`](https://github.com/sonnt5/Baked-Sec-Secure-SDLC-E01-KDP/tree/chap9-solution/Labworks/Chap%209%20-%20Secure%20CI%20and%20CD/secure-ci-lab) — base project to build upon
+- Add the `Dockerfile` and `build-and-sign` job to `ci.yml` as described in the steps above
 - **Key additions:** `Dockerfile`, `deploy_check.sh`, and the `build-and-sign` workflow job with Cosign signing
 - *Note: This lab builds on Labs 1-2. The focus is on artifact signing and SBOM generation rather than vulnerability detection.*

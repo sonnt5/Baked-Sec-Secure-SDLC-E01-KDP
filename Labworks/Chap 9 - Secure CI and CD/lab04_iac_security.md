@@ -22,6 +22,11 @@ Practice scanning configuration vulnerabilities in infrastructure code (IaC) and
 *   A repository containing Terraform files (`.tf`) or Kubernetes manifests (`.yaml`).
 *   The `checkov` tool (can be run via Docker or pip).
 
+### Getting Started
+If you haven't completed Lab 1, download the starter project and set up your own repository:
+1.  Download the starter code from: https://github.com/sonnt5/Baked-Sec-Secure-SDLC-E01-KDP/tree/main/Labworks/Chap%209%20-%20Secure%20CI%20and%20CD/secure-ci-lab
+2.  Create a **new repository** on your GitHub account and push the starter code (see Lab 1, Getting Started for detailed steps).
+
 ## 3. Scenario
 You are defining AWS infrastructure using Terraform. An engineer on your team has submitted a Pull Request containing an S3 Bucket configured with `public-read` ACL and a Security Group that allows **all inbound traffic from any IP** (`0.0.0.0/0`). Without IaC scanning, these misconfigurations would pass code review (most developers are not cloud security experts) and get applied to production — creating a publicly accessible data store and an attack surface open to the entire Internet.
 
@@ -162,6 +167,7 @@ deny[msg] {
 *   The **remediation loop** (fail -> fix -> re-scan -> pass) mirrors the same pattern used for application security gates in Labs 1-2, reinforcing that infrastructure and application code deserve equal security scrutiny.
 
 ## 6. Answer Key / Solution Repository
-- **Solution code:** Based on the `secure-ci-lab/` folder — add the `infra/main.tf`, `policy/s3.rego`, and `iac-scan` job to `ci.yml` as described in the steps above
+- **Solution branch:** [`chap9-solution`](https://github.com/sonnt5/Baked-Sec-Secure-SDLC-E01-KDP/tree/chap9-solution/Labworks/Chap%209%20-%20Secure%20CI%20and%20CD/secure-ci-lab) — base project to build upon
+- Add the `infra/main.tf`, `policy/s3.rego`, and `iac-scan` job to `ci.yml` as described in the steps above
 - **Vulnerable state:** Use `acl = "public-read"` and `cidr_blocks = ["0.0.0.0/0"]` in `main.tf` to trigger Checkov failures
 - **Fixed state:** Change to `acl = "private"` and restrict security group ingress to pass all gates

@@ -22,6 +22,11 @@ Practice Software Composition Analysis (SCA) to detect vulnerabilities in third-
 *   Continue using the repository from Lab 1 or create a new one.
 *   Understanding of `package.json` and `package-lock.json`.
 
+### Getting Started
+If you haven't completed Lab 1, download the starter project and set up your own repository:
+1.  Download the starter code from: https://github.com/sonnt5/Baked-Sec-Secure-SDLC-E01-KDP/tree/main/Labworks/Chap%209%20-%20Secure%20CI%20and%20CD/secure-ci-lab
+2.  Create a **new repository** on your GitHub account and push the starter code (see Lab 1, Getting Started for detailed steps).
+
 ## 3. Scenario
 Your project is using an old version of the `lodash` library (v4.17.15) that has multiple known **Critical** and **High** severity CVEs, including Prototype Pollution (CVE-2020-8203) and Command Injection vulnerabilities. Without SCA, the team has no visibility into these risks — the application builds and tests pass normally, giving a false sense of security.
 
@@ -149,6 +154,7 @@ updates:
 *   The full SCA workflow — **Detection -> Patch Proposal -> CI Verification -> Merge** — creates a closed-loop system for managing supply chain risk continuously.
 
 ## 6. Answer Key / Solution Repository
-- **Solution code:** Based on the `secure-ci-lab/` folder — add `lodash@4.17.15` to `package.json` and the `sca-scan` job + `.github/dependabot.yml` as described in the steps above
+- **Solution branch:** [`chap9-solution`](https://github.com/sonnt5/Baked-Sec-Secure-SDLC-E01-KDP/tree/chap9-solution/Labworks/Chap%209%20-%20Secure%20CI%20and%20CD/secure-ci-lab) — base project to build upon
+- Add `lodash@4.17.15` to `package.json` and the `sca-scan` job + `.github/dependabot.yml` as described in the steps above
 - **Vulnerable state:** Use `lodash@4.17.15` in `package.json` to trigger SCA failures
 - **Fixed state:** Update to `lodash@4.17.21` (via Dependabot PR or manual fix) to pass all gates
