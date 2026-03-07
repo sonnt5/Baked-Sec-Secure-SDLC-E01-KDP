@@ -188,6 +188,6 @@ Add the Semgrep tool to scan for code vulnerabilities. Add a step to the `securi
 *   Combining multiple gates (secrets + SAST + linting) provides **Defense in Depth** — if one gate misses an issue, another can catch it.
 
 ## 6. Answer Key / Solution Repository
-- **Repository:** https://github.com/maycuatroi1/secure-ci-lab
-- **`main` branch:** Complete working solution (all security gates pass)
-- **`vulnerable` branch:** Intentionally vulnerable code for testing gates
+- **Solution code:** See the `secure-ci-lab/` folder in this chapter's Labworks directory
+- **`secure-ci-lab/`:** Complete working solution (all security gates pass) — contains `app.js`, `.github/workflows/ci.yml`, `.eslintrc.json`, etc.
+- **`secure-ci-lab/vulnerable-branch/`:** Intentionally vulnerable code for testing gates — contains `config.js` (fake AWS key) and modified `app.js` (with `eval()`)

@@ -162,6 +162,6 @@ deny[msg] {
 *   The **remediation loop** (fail -> fix -> re-scan -> pass) mirrors the same pattern used for application security gates in Labs 1-2, reinforcing that infrastructure and application code deserve equal security scrutiny.
 
 ## 6. Answer Key / Solution Repository
-- **Repository:** https://github.com/maycuatroi1/iac-security-lab
-- **`main` branch:** Complete working solution (all security gates pass)
-- **`vulnerable` branch:** Intentionally vulnerable code for testing gates
+- **Solution code:** Based on the `secure-ci-lab/` folder — add the `infra/main.tf`, `policy/s3.rego`, and `iac-scan` job to `ci.yml` as described in the steps above
+- **Vulnerable state:** Use `acl = "public-read"` and `cidr_blocks = ["0.0.0.0/0"]` in `main.tf` to trigger Checkov failures
+- **Fixed state:** Change to `acl = "private"` and restrict security group ingress to pass all gates

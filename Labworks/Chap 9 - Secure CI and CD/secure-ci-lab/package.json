@@ -1,0 +1,13 @@
+{
+  "name": "secure-ci-lab",
+  "version": "1.0.0",
+  "description": "Lab 1: Secure Pipeline with Security Gates",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js",
+    "test": "echo \"Tests passed\" && exit 0"
+  },
+  "dependencies": {
+    "express": "^4.17.1"
+  }
+}

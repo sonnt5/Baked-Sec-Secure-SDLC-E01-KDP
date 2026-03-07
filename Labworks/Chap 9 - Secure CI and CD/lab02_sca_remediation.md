@@ -149,6 +149,6 @@ updates:
 *   The full SCA workflow — **Detection -> Patch Proposal -> CI Verification -> Merge** — creates a closed-loop system for managing supply chain risk continuously.
 
 ## 6. Answer Key / Solution Repository
-- **Repository:** https://github.com/maycuatroi1/sca-remediation-lab
-- **`main` branch:** Complete working solution (all security gates pass)
-- **`vulnerable` branch:** Intentionally vulnerable code for testing gates
+- **Solution code:** Based on the `secure-ci-lab/` folder — add `lodash@4.17.15` to `package.json` and the `sca-scan` job + `.github/dependabot.yml` as described in the steps above
+- **Vulnerable state:** Use `lodash@4.17.15` in `package.json` to trigger SCA failures
+- **Fixed state:** Update to `lodash@4.17.21` (via Dependabot PR or manual fix) to pass all gates

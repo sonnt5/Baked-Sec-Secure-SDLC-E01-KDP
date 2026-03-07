@@ -175,6 +175,6 @@ This demonstrates how a deployment system (like ArgoCD or a Kubernetes Admission
 *   Combining SBOM + Signing + Verification creates an end-to-end **chain of trust** from source code to production deployment.
 
 ## 6. Answer Key / Solution Repository
-- **Repository:** https://github.com/maycuatroi1/artifact-integrity-lab
-- **`main` branch:** Complete working solution (all security gates pass)
-- *Note: This lab does not have a `vulnerable` branch, as the focus is on artifact signing and SBOM generation rather than vulnerability detection.*
+- **Solution code:** Based on the `secure-ci-lab/` folder — add the `Dockerfile` and `build-and-sign` job to `ci.yml` as described in the steps above
+- **Key additions:** `Dockerfile`, `deploy_check.sh`, and the `build-and-sign` workflow job with Cosign signing
+- *Note: This lab builds on Labs 1-2. The focus is on artifact signing and SBOM generation rather than vulnerability detection.*
