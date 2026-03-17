@@ -70,6 +70,4 @@ After completing this chapter, verify the following:
 
 | File | Description | Used In |
 |------|-------------|---------|
-| `assets/CODING_WAR_Architecture_Reference.pdf` | Reference Architecture Diagram (Modular Monolith variant) | Lab 3.2, 3.6 |
-| `assets/CODING_WAR_API_Spec.yaml` | Full OpenAPI 3.0 spec for all endpoints | Lab 3.3 |
-| `assets/Anti_Pattern_Examples.pdf` | Common anti-patterns with explanations | Lab 3.5 |
+| `assets/Software Design Document (SWDD) - Coding War.docx` | Reference Software Design Document |  |
