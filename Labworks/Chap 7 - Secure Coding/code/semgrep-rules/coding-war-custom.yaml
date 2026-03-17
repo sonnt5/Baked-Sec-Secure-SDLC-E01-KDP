@@ -1,0 +1,163 @@
+# semgrep-rules/coding-war-custom.yaml
+# Custom Semgrep rules for CODING WAR Python/FastAPI backend
+# Lab 7.6: SAST/SCA Triage — run with:
+#   semgrep scan --config semgrep-rules/coding-war-custom.yaml app/
+#
+# Rule IDs follow the pattern: coding-war.<category>.<rule-name>
+# Severity: ERROR = blocking (Critical/High in SCSP SLA)
+#           WARNING = non-blocking (Medium)
+#           INFO = advisory (Low)
+
+rules:
+
+  # -------------------------------------------------------------------------
+  # CI-01: All DB access must go through the repository layer
+  # No handler module may import db_session or call db.execute() directly.
+  # ASVS V1.2.4
+  # -------------------------------------------------------------------------
+  - id: coding-war.ci01.direct-db-in-handler
+    patterns:
+      - pattern: |
+          from app.db import $DB_SESSION
+      - pattern-inside: |
+          # app/api/...
+          ...
+    message: >
+      [CI-01] Handler module imports db_session directly. All DB access must
+      go through repository classes (app/repositories/). Move the query to the
+      appropriate *Repository class and inject it via FastAPI Depends().
+    languages: [python]
+    severity: ERROR
+    metadata:
+      asvs: "V1.2.4"
+      cwe: "CWE-89"
+      category: "security"
+
+  # -------------------------------------------------------------------------
+  # CI-01 variant: raw db.execute() with string argument (SQL injection risk)
+  # -------------------------------------------------------------------------
+  - id: coding-war.ci01.raw-sql-execute
+    pattern: |
+      $DB.execute($STR + ...)
+    message: >
+      [CI-01] db.execute() called with string concatenation. This is a SQL
+      injection risk. Use SQLAlchemy ORM or parameterized text() constructs.
+      For ORDER BY columns: use an allowlist dict (ALLOWED_SORT_FIELDS).
+      ASVS V1.2.4 / CWE-89.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      asvs: "V1.2.4"
+      cwe: "CWE-89"
+
+  # -------------------------------------------------------------------------
+  # CI-03: Every /admin endpoint must have @require_admin_mfa
+  # -------------------------------------------------------------------------
+  - id: coding-war.ci03.admin-missing-mfa
+    patterns:
+      - pattern: |
+          @$ROUTER.post("/admin/...")
+          async def $FUNC(...):
+              ...
+      - pattern-not: |
+          @$ROUTER.post("/admin/...")
+          async def $FUNC(..., $MFA=Depends(require_admin_mfa), ...):
+              ...
+    message: >
+      [CI-03] Admin endpoint is missing Depends(require_admin_mfa). Every
+      /admin/* route must enforce MFA session validation. Add
+      `_mfa=Depends(require_admin_mfa)` to the function signature.
+      ASVS V6.5 / CWE-306.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      asvs: "V6.5"
+      cwe: "CWE-306"
+
+  # -------------------------------------------------------------------------
+  # CI-04: subprocess must never use shell=True outside sandbox_runner.py
+  # -------------------------------------------------------------------------
+  - id: coding-war.ci04.subprocess-shell-true
+    patterns:
+      - pattern: subprocess.run(..., shell=True, ...)
+      - pattern-not-inside: |
+          # app/services/sandbox_runner.py
+          ...
+    message: >
+      [CI-04] subprocess.run() called with shell=True outside
+      sandbox_runner.py. This allows OS command injection via shell
+      metacharacters. Use the list API: subprocess.run([cmd, arg1, arg2],
+      shell=False). ASVS V1.2.5 / CWE-78.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      asvs: "V1.2.5"
+      cwe: "CWE-78"
+
+  # -------------------------------------------------------------------------
+  # CI-06: Logging must not include passwords, tokens, or source code
+  # -------------------------------------------------------------------------
+  - id: coding-war.ci06.log-sensitive-field
+    patterns:
+      - pattern-either:
+          - pattern: logging.info(..., password=..., ...)
+          - pattern: logging.info(..., token=..., ...)
+          - pattern: logging.info(..., source_code=..., ...)
+          - pattern: logger.info(..., password=..., ...)
+          - pattern: logger.info(..., token=..., ...)
+          - pattern: logger.info(..., source_code=..., ...)
+          - pattern: logger.error(..., password=..., ...)
+          - pattern: logger.error(..., token=..., ...)
+    message: >
+      [CI-06] Sensitive field (password / token / source_code) passed to
+      logger. This field must be redacted or excluded from log calls.
+      Use LoggingMiddleware.REDACT_FIELDS or exclude the field from the
+      extra={} dict. ASVS V16.2.5 / CWE-532.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      asvs: "V16.2.5"
+      cwe: "CWE-532"
+
+  # -------------------------------------------------------------------------
+  # Hardcoded secret detection (complements detect-secrets pre-commit hook)
+  # -------------------------------------------------------------------------
+  - id: coding-war.secrets.hardcoded-jwt-secret
+    patterns:
+      - pattern: |
+          JWT_SECRET = "$SECRET"
+      - pattern-not: |
+          JWT_SECRET = os.environ[...]
+      - pattern-not: |
+          JWT_SECRET = os.getenv(...)
+    message: >
+      Hardcoded JWT secret detected. Secrets must never appear in source code.
+      Load from environment variable or Secret Manager:
+        JWT_SECRET: str = Field(..., env="JWT_SECRET")
+      ASVS V11.5 / CWE-798.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      asvs: "V11.5"
+      cwe: "CWE-798"
+
+  # -------------------------------------------------------------------------
+  # ReDoS: nested quantifiers in user-supplied regex patterns
+  # -------------------------------------------------------------------------
+  - id: coding-war.ci02.redos-nested-quantifier
+    patterns:
+      - pattern: re.match($PATTERN, $TEXT)
+      - pattern: re.search($PATTERN, $TEXT)
+      - metavariable-regex:
+          metavariable: $PATTERN
+          regex: '.*\(.*[+*]\).*[+*].*'   # nested quantifier heuristic
+    message: >
+      Potential ReDoS: regex pattern contains nested quantifiers which may
+      cause catastrophic backtracking on crafted input. Use safe_regex_match()
+      with a timeout, or replace with a linear-time alternative.
+      ASVS V1.2.9 / CWE-1333.
+    languages: [python]
+    severity: WARNING
+    metadata:
+      asvs: "V1.2.9"
+      cwe: "CWE-1333"
