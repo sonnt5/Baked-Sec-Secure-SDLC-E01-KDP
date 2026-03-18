@@ -1,0 +1,62 @@
+# config/trivy-config.yaml
+# Chapter 8 — Trivy Scan Configuration
+#
+# Used in:
+#   Lab 8.4 (SCA + Container scan):  trivy image --config code/config/trivy-config.yaml coding-war:latest
+#   Lab 8.4 (filesystem scan):       trivy fs --config code/config/trivy-config.yaml .
+#   Lab 8.5 (IaC scan):              trivy config --config code/config/trivy-config.yaml .
+#
+# Severity thresholds map to the SCSP remediation SLA (Ch.7 Lab 7.6):
+#   CRITICAL — patch same day
+#   HIGH     — patch within 7 days
+#   MEDIUM   — patch within 30 days
+
+# Severity levels to report (all above MEDIUM)
+severity:
+  - CRITICAL
+  - HIGH
+  - MEDIUM
+
+# Exit with code 1 when CRITICAL or HIGH findings are present
+# (blocks CI — override with --exit-code 0 for informational runs)
+exit-code: 1
+
+# Exit if a package is End-of-Life (no further security patches)
+exit-on-eol: true
+
+# Scanners to enable per scan type
+# For 'trivy fs' and 'trivy image': vuln + secret
+# For 'trivy config': config only
+# Trivy auto-selects appropriate scanners per target type.
+scanners:
+  - vuln      # CVE vulnerabilities in OS packages and application dependencies
+  - config    # IaC misconfigurations (Kubernetes, Dockerfile, docker-compose)
+  - secret    # Hardcoded secrets in source and image layers
+  - license   # License compliance (informational)
+
+# Cache settings — refresh vulnerability DB daily
+cache:
+  dir: .trivy-cache
+  ttl: 24h
+
+# IaC scan settings
+misconfiguration:
+  include-non-failures: false  # Only show failures, not passed checks
+
+# Ignore rules — every suppression MUST have a documented reason and expiry.
+# Suppressions without justification are treated as compliance gaps.
+# Format:
+#   - id: <AVD-ID>
+#     reason: "<technical justification>"
+#     expires: "<YYYY-MM-DD>"
+#
+# Example (do not uncomment without reviewing):
+# ignore:
+#   - id: AVD-DS-0026
+#     reason: "Judge worker runs as root for gVisor RunD compatibility;
+#              mitigated by gVisor kernel isolation. See ADR-007."
+#     expires: "2025-12-31"
+ignore: []
+
+# Output format for CI artifact upload
+format: table  # Use 'json' for machine-readable output in CI artifacts

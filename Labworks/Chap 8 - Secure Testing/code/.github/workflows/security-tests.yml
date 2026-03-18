@@ -1,0 +1,93 @@
+# .github/workflows/security-tests.yml
+# Chapter 8, Lab 8.2: Security Unit Tests in CI
+#
+# Runs pytest security suite on every push and PR.
+# Blocks merge on any security test failure.
+#
+# Lab 8.2, Task 5 asks you to analyse this workflow:
+#   - Why -x (stop on first failure)?
+#   - Why health checks on postgres and redis?
+#   - Why JWT_SECRET comes from secrets, not hardcoded?
+
+name: Security Tests
+
+on:
+  push:
+    branches: [main, staging, develop]
+  pull_request:
+
+jobs:
+
+  security-unit-tests:
+    name: Security Unit Tests
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_DB: coding_war_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: test_password_ci_only
+        ports:
+          - 5432:5432
+        # Health check ensures postgres is ready before tests start.
+        # Without this, tests may fail with connection errors, not test failures.
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio httpx freezegun
+
+      - name: Run security test suite
+        # -x: stop on first failure — for a blocking security gate,
+        #     knowing the first failure is more useful than seeing all failures
+        #     from a potentially inconsistent state.
+        # -m security: run only tests marked as security (fast subset)
+        # --tb=short: enough context to diagnose without full tracebacks
+        run: |
+          pytest tests/security/ \
+            -m security \
+            --tb=short \
+            -v \
+            --junitxml=security-test-results.xml \
+            -x
+        env:
+          DATABASE_URL: postgresql+asyncpg://postgres:test_password_ci_only@localhost/coding_war_test
+          REDIS_URL: redis://localhost:6379
+          # JWT_SECRET injected from GitHub Secrets — never hardcode,
+          # even for a test secret (it would appear in repo history).
+          JWT_SECRET: ${{ secrets.CI_JWT_SECRET }}
+          ENVIRONMENT: test
+
+      - name: Upload test results
+        if: always()   # Upload even on failure — needed to diagnose CI failures
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-test-results-${{ github.sha }}
+          path: security-test-results.xml
+          retention-days: 14

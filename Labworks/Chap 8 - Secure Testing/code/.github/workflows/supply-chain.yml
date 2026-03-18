@@ -1,0 +1,133 @@
+# .github/workflows/supply-chain.yml
+# Chapter 8, Lab 8.4: Supply Chain Security -- SCA + Container + Secrets
+#
+# Three jobs:
+#   1. sca-audit      (every PR + push): pip-audit -- fast, blocking on CVEs
+#   2. secrets-scan   (every PR + push): detect-secrets -- always blocking
+#   3. container-scan (nightly):         Trivy image + filesystem scan
+#
+# Lab 8.4 asks you to:
+#   - Run pip-audit and assess CVE exploitability in CODING WAR context
+#   - Generate an SBOM in CycloneDX format
+#   - Understand what detect-secrets baseline protects and what it misses
+
+name: Supply Chain Security
+
+on:
+  push:
+    branches: [main, staging, develop]
+  pull_request:
+  schedule:
+    - cron: "0 2 * * 1"    # Weekly Monday at 02:00 UTC
+
+jobs:
+
+  # ---------------------------------------------------------------------------
+  # SCA: pip-audit on every PR -- catches new vulnerable dependencies before merge
+  # Fast: < 15s. Remove continue-on-error to make blocking on CRITICAL/HIGH CVEs.
+  # ---------------------------------------------------------------------------
+  sca-audit:
+    name: SCA -- pip-audit
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install pip-audit
+        run: pip install pip-audit --break-system-packages
+
+      - name: pip-audit -- CVE scan
+        run: |
+          pip-audit \
+            --requirement requirements.txt \
+            --format json \
+            -o sca-results.json
+        continue-on-error: true   # remove to make blocking
+
+      - name: pip-audit -- generate SBOM (CycloneDX)
+        # SBOM answers "what is in this build?" -- CycloneDX integrates with VEX.
+        run: |
+          pip-audit \
+            --requirement requirements.txt \
+            --format cyclonedx-json \
+            -o sbom.json
+
+      - name: Upload SCA artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sca-results-${{ github.sha }}
+          path: |
+            sca-results.json
+            sbom.json
+          retention-days: 90
+
+  # ---------------------------------------------------------------------------
+  # Secrets scan: detect-secrets on every PR -- always blocking
+  # Checks that no new secrets were introduced relative to the committed baseline.
+  # The .secrets.baseline file must be committed and kept up to date.
+  # ---------------------------------------------------------------------------
+  secrets-scan:
+    name: Secrets Scan -- detect-secrets
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install detect-secrets
+        run: pip install detect-secrets --break-system-packages
+
+      - name: Check for new secrets vs committed baseline
+        # Exits non-zero if any new secrets are found beyond the baseline.
+        # Always blocking -- a new secret in a PR must never merge.
+        run: detect-secrets scan --baseline .secrets.baseline
+
+  # ---------------------------------------------------------------------------
+  # Container image scan: Trivy nightly -- non-blocking, alerting
+  # Requires a built image -- runs after image is published to registry.
+  # ---------------------------------------------------------------------------
+  container-scan:
+    name: Container Scan -- Trivy
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'push'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Trivy
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Trivy image scan
+        run: |
+          trivy image \
+            --config code/config/trivy-config.yaml \
+            --format json \
+            -o trivy-image-results.json \
+            coding-war:latest
+        continue-on-error: true
+
+      - name: Trivy filesystem scan (no Docker build required)
+        run: |
+          trivy fs \
+            --config code/config/trivy-config.yaml \
+            --format json \
+            -o trivy-fs-results.json \
+            .
+        continue-on-error: true
+
+      - name: Upload Trivy results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-results-${{ github.sha }}
+          path: |
+            trivy-image-results.json
+            trivy-fs-results.json
+          retention-days: 30

@@ -1,0 +1,281 @@
+# semgrep-rules/custom-coding-war.yml
+# Chapter 8, Lab 8.3: Custom Semgrep Rules — Syntax Reference
+#
+# Role: This file demonstrates the syntax and specificity expected for Lab 8.3.
+# Read it before writing your own rules. Then create a separate file for your
+# own rules — do not modify this one.
+#
+# These rules enforce Code Contracts from Ch.7 and cover patterns seen
+# in Lab 8.3 simulated findings SF-001 to SF-006.
+#
+# Run against the codebase:
+#   semgrep scan --config code/semgrep-rules/custom-coding-war.yml app/
+#
+# Run built-in tests (inline annotations):
+#   semgrep --test code/semgrep-rules/
+#
+# Rule ID convention: coding-war.<contract-or-threat>.<short-description>
+# Severity: ERROR = blocking (Critical/High per SCSP SLA)
+#           WARNING = non-blocking (Medium)
+
+rules:
+
+  # ---------------------------------------------------------------------------
+  # CI-03: Every /admin/* endpoint must declare Depends(require_admin_mfa)
+  # Covers: Lab 8.3 SF-004
+  # ASVS V6.5 / CWE-306
+  # ---------------------------------------------------------------------------
+  - id: coding-war.ci03.admin-endpoint-missing-mfa
+    patterns:
+      - pattern-either:
+          - pattern: |
+              @$ROUTER.get("/admin/...")
+              async def $FUNC(...):
+                  ...
+          - pattern: |
+              @$ROUTER.post("/admin/...")
+              async def $FUNC(...):
+                  ...
+          - pattern: |
+              @$ROUTER.put("/admin/...")
+              async def $FUNC(...):
+                  ...
+          - pattern: |
+              @$ROUTER.delete("/admin/...")
+              async def $FUNC(...):
+                  ...
+          - pattern: |
+              @$ROUTER.patch("/admin/...")
+              async def $FUNC(...):
+                  ...
+      - pattern-not: |
+          @$ROUTER.$METHOD("/admin/...")
+          async def $FUNC(..., $MFA=Depends(require_admin_mfa), ...):
+              ...
+    message: >
+      [CI-03] Admin endpoint is missing Depends(require_admin_mfa).
+      Every /admin/* route must verify MFA before executing.
+      Add: _mfa: None = Depends(require_admin_mfa) to the function signature.
+      ASVS V6.5 / CWE-306.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      asvs: "V6.5"
+      cwe: "CWE-306"
+      contract: "CI-03"
+    # Inline tests
+    # ruleid: coding-war.ci03.admin-endpoint-missing-mfa
+    # @router.post("/admin/contests")
+    # async def create_contest(data: ContestCreate, db=Depends(get_db)):
+    #     ...
+    #
+    # ok: coding-war.ci03.admin-endpoint-missing-mfa
+    # @router.post("/admin/contests")
+    # async def create_contest(data: ContestCreate, _mfa=Depends(require_admin_mfa)):
+    #     ...
+
+  # ---------------------------------------------------------------------------
+  # CI-01: db.execute() with f-string or string concatenation — SQL injection
+  # Covers: Lab 8.3 SF-001
+  # ASVS V1.2.4 / CWE-89
+  # ---------------------------------------------------------------------------
+  - id: coding-war.ci01.raw-sql-fstring
+    pattern: |
+      $DB.execute(f"...")
+    message: >
+      [CI-01] db.execute() with an f-string — SQL injection risk.
+      User-supplied values in SQL strings are not parameterized.
+      Fix: SQLAlchemy ORM (select().where()) or sqlalchemy.text() with bind params.
+      For ORDER BY: use ALLOWED_SORT_FIELDS dict mapping strings to column objects.
+      ASVS V1.2.4 / CWE-89.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      asvs: "V1.2.4"
+      cwe: "CWE-89"
+      contract: "CI-01"
+    # ruleid: coding-war.ci01.raw-sql-fstring
+    # result = db.execute(f"SELECT * FROM submissions ORDER BY {sort_field}")
+    #
+    # ok: coding-war.ci01.raw-sql-fstring
+    # result = db.execute(select(Submission).order_by(ALLOWED_SORT_FIELDS[sort_by]))
+
+  # ---------------------------------------------------------------------------
+  # CI-04: subprocess.run(shell=True) outside sandbox_runner.py
+  # Covers: Lab 8.3 SF-002 (this rule catches the True Positive variant)
+  # ASVS V1.2.5 / CWE-78
+  # ---------------------------------------------------------------------------
+  - id: coding-war.ci04.subprocess-shell-true
+    patterns:
+      - pattern: subprocess.run(..., shell=True, ...)
+      - pattern-not-inside: |
+          # app/services/sandbox_runner.py
+          ...
+    message: >
+      [CI-04] subprocess.run() with shell=True outside sandbox_runner.py.
+      shell=True allows shell metacharacter injection (;, &&, |, $(), backtick).
+      Fix: subprocess.run(["/usr/bin/python3", str(path)], shell=False, env={}).
+      Only sandbox_runner.py may use subprocess — all other code execution
+      must go through sandbox_runner.execute().
+      ASVS V1.2.5 / CWE-78.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      asvs: "V1.2.5"
+      cwe: "CWE-78"
+      contract: "CI-04"
+    # ruleid: coding-war.ci04.subprocess-shell-true
+    # subprocess.run(f"{language} {source_path}", shell=True)
+    #
+    # ok: coding-war.ci04.subprocess-shell-true
+    # subprocess.run(["/usr/bin/python3", str(source_path)], shell=False, env={})
+
+  # ---------------------------------------------------------------------------
+  # TH-08: jwt.decode() without explicit algorithms= parameter
+  # Prevents alg=none confusion attack (CVE-2024-33663)
+  # Covers: Lab 8.3 SF-004 (related to admin bypass)
+  # ASVS V9.1 / CWE-347
+  # ---------------------------------------------------------------------------
+  - id: coding-war.th08.jwt-decode-missing-algorithms
+    patterns:
+      - pattern: jwt.decode($TOKEN, $KEY)
+      - pattern-not: jwt.decode($TOKEN, $KEY, algorithms=[...])
+    message: >
+      [TH-08] jwt.decode() without explicit algorithms= parameter.
+      python-jose accepts alg=none from the token header when algorithms
+      is omitted, allowing forged unsigned tokens.
+      Fix: jwt.decode(token, key, algorithms=["ES256"])
+      References: CVE-2024-33663, Lab 8.3 TR-SCA-2025-007.
+      ASVS V9.1 / CWE-347.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      asvs: "V9.1"
+      cwe: "CWE-347"
+    # ruleid: coding-war.th08.jwt-decode-missing-algorithms
+    # payload = jwt.decode(token, settings.JWT_SECRET)
+    #
+    # ok: coding-war.th08.jwt-decode-missing-algorithms
+    # payload = jwt.decode(token, settings.JWT_SECRET, algorithms=["ES256"])
+
+  # ---------------------------------------------------------------------------
+  # SF-003/SF-005 class: hardcoded secrets and weak hash algorithms
+  # ASVS V11.5 / CWE-798 and CWE-327
+  # ---------------------------------------------------------------------------
+  - id: coding-war.secrets.hardcoded-jwt-secret
+    patterns:
+      - pattern-either:
+          - pattern: |
+              JWT_SECRET = "$VALUE"
+          - pattern: |
+              SECRET_KEY = "$VALUE"
+      - pattern-not: JWT_SECRET = os.environ[...]
+      - pattern-not: JWT_SECRET = os.getenv(...)
+      - pattern-not: SECRET_KEY = os.environ[...]
+      - pattern-not: SECRET_KEY = os.getenv(...)
+    message: >
+      Hardcoded secret detected. Secrets in source code are permanently exposed
+      in version control history even after deletion.
+      Fix: JWT_SECRET: str = Field(..., env="JWT_SECRET")  # pydantic-settings
+           JWT_SECRET = os.environ["JWT_SECRET"]
+      ASVS V11.5 / CWE-798.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      asvs: "V11.5"
+      cwe: "CWE-798"
+    # ruleid: coding-war.secrets.hardcoded-jwt-secret
+    # JWT_SECRET = "super_secret_coding_war_key"
+    #
+    # ok: coding-war.secrets.hardcoded-jwt-secret
+    # JWT_SECRET = os.environ["JWT_SECRET"]
+
+  # ---------------------------------------------------------------------------
+  # SF-006 class: pickle.loads() on data from external sources — RCE risk
+  # ASVS V15.3 / CWE-502
+  # ---------------------------------------------------------------------------
+  - id: coding-war.sec.pickle-loads-untrusted
+    patterns:
+      - pattern: pickle.loads(...)
+      - pattern-not-inside: |
+          # tests/...
+          ...
+    message: >
+      pickle.loads() detected outside test files.
+      Deserializing pickle data from external sources (Redis, message queue,
+      API response) enables Remote Code Execution — a poisoned pickle payload
+      executes arbitrary Python on deserialization.
+      Fix: replace with json.loads(). JSON cannot execute code.
+      ASVS V15.3 / CWE-502.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      asvs: "V15.3"
+      cwe: "CWE-502"
+    # ruleid: coding-war.sec.pickle-loads-untrusted
+    # cached = pickle.loads(redis.get("submission_cache"))
+    #
+    # ok: coding-war.sec.pickle-loads-untrusted
+    # cached = json.loads(redis.get("submission_cache"))
+
+  # ---------------------------------------------------------------------------
+  # CI-06: Sensitive fields must not appear in logger kwargs
+  # ASVS V16.2.5 / CWE-532
+  # ---------------------------------------------------------------------------
+  - id: coding-war.ci06.log-sensitive-field
+    patterns:
+      - pattern-either:
+          - pattern: $LOGGER.info(..., password=..., ...)
+          - pattern: $LOGGER.info(..., token=..., ...)
+          - pattern: $LOGGER.info(..., source_code=..., ...)
+          - pattern: $LOGGER.error(..., password=..., ...)
+          - pattern: $LOGGER.error(..., token=..., ...)
+          - pattern: $LOGGER.error(..., source_code=..., ...)
+          - pattern: $LOGGER.warning(..., password=..., ...)
+          - pattern: $LOGGER.debug(..., password=..., ...)
+          - pattern: $LOGGER.debug(..., token=..., ...)
+    message: >
+      [CI-06] Sensitive field (password / token / source_code) passed to logger.
+      Logs are often forwarded to third-party aggregators with broad access.
+      Exclude the field from extra={} or hash it before logging.
+      Never log credentials, session tokens, or contestant source code.
+      ASVS V16.2.5 / CWE-532.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      asvs: "V16.2.5"
+      cwe: "CWE-532"
+      contract: "CI-06"
+
+  # ---------------------------------------------------------------------------
+  # CI-07: Traceback must never appear in HTTP response body
+  # Covers: Lab 8.3 SF-006 class (information leakage)
+  # ASVS V16.5.1 / CWE-209
+  # ---------------------------------------------------------------------------
+  - id: coding-war.ci07.traceback-in-response
+    patterns:
+      - pattern-either:
+          - pattern: |
+              JSONResponse(..., content={..., "traceback": ..., ...})
+          - pattern: |
+              return {"traceback": $TB, ...}
+          - pattern: |
+              return {"error": str($EXC), "traceback": ..., ...}
+    message: >
+      [CI-07] Traceback in HTTP response body — exposes server file paths,
+      library versions, and DB schema to any client that triggers an error.
+      Fix: return only error_code + generic message + short error_ref.
+      Log the full traceback internally via logger.debug(..., exc_info=True).
+      See app/core/error_handlers.py (fixed version, Ch.7 Lab 7.5).
+      ASVS V16.5.1 / CWE-209.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      asvs: "V16.5.1"
+      cwe: "CWE-209"
+      contract: "CI-07"
+    # ruleid: coding-war.ci07.traceback-in-response
+    # return JSONResponse(500, content={"error": str(exc), "traceback": tb})
+    #
+    # ok: coding-war.ci07.traceback-in-response
+    # return JSONResponse(500, content={"error_code": "INTERNAL_ERROR", "error_ref": ref})
