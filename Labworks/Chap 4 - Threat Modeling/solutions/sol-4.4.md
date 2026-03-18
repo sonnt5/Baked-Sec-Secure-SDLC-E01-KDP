@@ -12,7 +12,7 @@
 |--------|-----------|-----------------|---------------------|--------------------------------|
 | **S** | Spoofing | Authentication | External Entity | Credential stuffing on POST /auth/login using stolen password lists from public breach databases |
 | **T** | Tampering | Integrity | Data Flow, Data Store | Modifying the submission JSON payload in transit to change the code being judged |
-| **R** | Repudiation | Auditing | Process, Data Store | Admin deletes a problem with no audit trail — who deleted it cannot be determined |
+| **R** | Repudiation | Auditing | Process, Data Store | Admin deletes a problem with no audit trail — who deleted it cannot be determined (Note: admin_audit_logs table designed in SDD to address this) |
 | **I** | Information Disclosure | Confidentiality | Data Flow, Data Store | Judge engine returns detailed stack traces and system paths in error responses, exposing internal system structure |
 | **D** | Denial of Service | Availability | Process, Data Flow | Submitting an infinite loop or exponential time complexity code that consumes all CPU time on the judge node, blocking other contestants |
 | **E** | Elevation of Privilege | Authorization | Process, Trust Boundary | Contestant accesses GET /submissions/{id} for a submission they don't own (IDOR/BOLA) — accessing another user's source code without authorization |
@@ -33,8 +33,8 @@
 
 | Element | STRIDE | Threat Scenario | Asset at Risk | Current Control |
 |---------|--------|----------------|---------------|----------------|
-| **Authentication Service** | **T** | Attacker intercepts a login response and replaces the JWT payload (alg:none attack) to forge admin role claims, bypassing role-based authorization. | Asset 4 (JWT Signing Secret) | JWT signature verification: ✓ (if implemented correctly), alg:none prevention: needs explicit verification |
-| **Authentication Service** | **R** | A failed login attempt by an attacker is not logged. No evidence exists to reconstruct brute force attempts or account compromise timeline. | Asset 9 (System Logs) | Login success logged: likely ✓, Failed attempts logged: MISSING |
+| **Authentication Service** | **T** | Attacker intercepts a login response and attempts JWT forgery. With RS256 (asymmetric key per SDD), the attacker cannot forge tokens without the private key. Risk: misconfiguration allowing weaker algorithms. | Asset 4 (JWT Signing Secret) | JWT signature verification with RS256: ✓ (per SDD), explicit algorithm validation needed in code |
+| **Authentication Service** | **R** | A failed login attempt by an attacker is not logged. No evidence exists to reconstruct brute force attempts or account compromise timeline. | Asset 9 (Admin Audit Logs) | Login success logged: likely ✓, Failed attempts logged: MISSING |
 | **Authentication Service** | **I** | Error message on failed login differs between "user not found" and "wrong password" — allows attacker to enumerate valid usernames. | Asset 1.1 (Login Details) | Uniform error message: MISSING |
 | **Submission & Judge Service** | **T** | Attacker modifies the message in RabbitMQ queue to change the submission's language field from Python to C++ after submission, potentially bypassing input validation or triggering a different execution path. | Asset 2 (Source Code), Asset 3 (Test Cases) | Message signing: MISSING |
 | **Submission & Judge Service** | **I** | Judge returns compilation error containing the full system path of temporary files: `/tmp/judge_abc123/contestant_solution.cpp:4: error` — exposing internal file structure. | Asset 9 (System Logs) | Error message sanitization: MISSING |
@@ -58,12 +58,12 @@
 | **AT-1.1** | Credential stuffing via /login | Leaf | AT-1 | Rate limit 10/min/IP, account lockout after 5 failures, CAPTCHA |
 | **AT-1.2** | Phishing for password | Leaf | AT-1 | MFA, security awareness training |
 | **AT-1.3** | Password breach database attack | Leaf | AT-1 | Breach monitoring alerts, forced password rotation notification |
-| **AT-2** | Bypass Authentication | OR | AT-0 | Algorithm validation, secure JWT implementation |
-| **AT-2.1** | JWT alg:none forgery | Leaf | AT-2 | Explicitly reject alg:none; verify signature algorithm server-side |
-| **AT-2.2** | Predict or brute-force JWT signing secret | Leaf | AT-2 | Use cryptographically random 256-bit secret; rotate every 90 days |
+| **AT-2** | Bypass Authentication | OR | AT-0 | Algorithm validation, secure JWT implementation with RS256 |
+| **AT-2.1** | JWT algorithm confusion (RS256 treated as HS256) | Leaf | AT-2 | Explicitly validate algorithm in JWT library config; reject any algorithm except RS256 |
+| **AT-2.2** | Compromise or guess JWT signing private key | Leaf | AT-2 | Use cryptographically random 4096-bit RSA key; rotate every 90 days; store in Secret Manager |
 | **AT-2.3** | Password reset token manipulation | Leaf | AT-2 | Short TTL (15 min), single-use tokens, HTTPS-only reset links |
-| **AT-3** | Session Hijacking | OR | AT-0 | Secure cookie flags, session timeout |
-| **AT-3.1** | Steal session token from insecure storage | Leaf | AT-3 | HttpOnly + Secure cookie flags; avoid localStorage for tokens |
+| **AT-3** | Session Hijacking | OR | AT-0 | Secure cookie flags, session timeout, HttpOnly cookies |
+| **AT-3.1** | Steal session token from insecure storage | Leaf | AT-3 | HttpOnly + Secure cookie flags per SDD; never use localStorage for tokens |
 | **AT-3.2** | XSS to extract token from DOM | Leaf | AT-3 | CSP headers; output encoding; HttpOnly cookie (JS cannot access) |
 | **AT-3.3** | Session fixation | Leaf | AT-3 | Regenerate session ID after successful login |
 
@@ -73,11 +73,11 @@
 
 | Threat ID | Threat Summary | Remote exploit? | Auth needed? | Automatable? | Likelihood | System takeover? | Admin access? | Crash system? | PII exposed? | Impact | Risk |
 |-----------|---------------|----------------|-------------|--------------|-----------|-----------------|--------------|--------------|-------------|--------|------|
-| **TH-06** | JWT alg:none bypass | Y | Y (need valid JWT structure) | Y | MEDIUM | N | Y (if admin JWT) | N | Y | CRITICAL | HIGH |
+| **TH-06** | JWT algorithm confusion (RS256/HS256) | Y | Y (need valid JWT structure) | Y | LOW | N | Y (if admin JWT) | N | Y | CRITICAL | MEDIUM |
 | **TH-07** | Test case exfiltration via storage key guessing | Y | Y (contestant) | Y | LOW | N | N | N | Y (test cases) | HIGH | MEDIUM |
 | **TH-08** | Scoreboard scraping for user enumeration | Y | N | Y | HIGH | N | N | N | Y (username/score) | LOW | MEDIUM |
 | **TH-09** | Flood registration to exhaust DB capacity | Y | N | Y | MEDIUM | N | N | Y | N | HIGH | HIGH |
-| **TH-10** | Missing CSP allows XSS in problem description | Y | Y (problem setter) | N | LOW | N | N | N | Partial (token via XSS) | MEDIUM | MEDIUM |
+| **TH-10** | Missing CSP allows XSS in problem description | Y | Y (admin) | N | LOW | N | N | N | Partial (token via XSS) | MEDIUM | MEDIUM |
 
 ---
 

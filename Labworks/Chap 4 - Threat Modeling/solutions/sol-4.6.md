@@ -10,7 +10,7 @@
 
 | Threat ID | STRIDE | Threat Summary | L (1–5) | I (1–5) | Risk Score | Risk Level | Mitigation Status | Residual Risk |
 |-----------|--------|---------------|---------|---------|-----------|-----------|------------------|--------------|
-| **TH-06** | S | JWT alg:none bypass | 2 | 5 | 10 | High | Partially mitigated | High — needs explicit audit |
+| **TH-06** | S | JWT algorithm confusion (RS256/HS256) | 2 | 5 | 10 | High | Partially mitigated (RS256 per SDD) | Medium — needs explicit audit |
 | **TH-07** | I | Test case key guessing | 1 | 4 | 4 | Medium | Fully mitigated | Low |
 | **TH-08** | I | Scoreboard user enumeration | 4 | 2 | 8 | Medium | Partially mitigated | Low-Medium |
 | **TH-09** | D | Registration flood | 3 | 3 | 9 | High | Partially mitigated | Medium |
@@ -25,7 +25,7 @@
 | Strategy | Mitigation Actions | Implementation Notes | Owner + Sprint |
 |----------|------------------|---------------------|---------------|
 | **🛡️ Reduce L** | Implement rate limiting: 10 req/min/IP; account lockout after 5 failures (15-min lock); CAPTCHA after 3 failures | Use Redis sliding window counter; lockout resets via email confirmation | Backend Auth Team · Sprint 1 |
-| **💥 Reduce I** | Mandate MFA for all admin accounts; offer TOTP 2FA for contestants; enforce bcrypt cost ≥12 | TOTP via Google Authenticator or Authy; store TOTP secret encrypted in DB | Backend Auth Team · Sprint 2 |
+| **💥 Reduce I** | Mandate MFA for all admin accounts; offer TOTP 2FA for contestants; enforce Argon2id (64MB, 4 iterations, 2 parallelism) per SDD | TOTP via Google Authenticator or Authy; store TOTP secret encrypted in DB | Backend Auth Team · Sprint 2 |
 | **👁️ Increase D** | Log ALL login attempts (success + failure) with IP, user-agent, timestamp; alert on >50 failures/hour from same IP | Use structured logging (JSON); ship to SIEM; alert via PagerDuty on threshold | Security/Infra Team · Sprint 1 |
 
 ### TH-03 / MC-02 — DoS + RCE via Submission
@@ -41,14 +41,14 @@
 | Strategy | Mitigation Actions | Implementation Notes | Owner + Sprint |
 |----------|------------------|---------------------|---------------|
 | **🛡️ Reduce L** | Add object-level ownership check on all submission endpoints: `assert submission.user_id == jwt.sub`; make check a shared middleware | Apply to GET, PUT, DELETE /submissions/{id}; code review checklist item | Backend Team · Sprint 1 (1 day) |
-| **💥 Reduce I** | Admin access to any submission only via dedicated `/admin/submissions/{id}` endpoint with separate audit log; contestants cannot access admin endpoint | Separate route with Admin role check + mandatory audit log entry | Backend Team · Sprint 1 |
-| **👁️ Increase D** | Log all submission access: `{user_id, submission_id, owned_by, accessed_at}`; alert if user accesses >10 submissions not owned by them in 1 minute | Pattern detection via log analysis; rate limit 10 req/min/user on /submissions/{id} | Security Team · Sprint 2 |
+| **💥 Reduce I** | Admin access to any submission only via dedicated `/admin/submissions/{id}` endpoint with separate audit log (admin_audit_logs table); contestants cannot access admin endpoint | Separate route with Admin role check + mandatory audit log entry to admin_audit_logs table | Backend Team · Sprint 1 |
+| **👁️ Increase D** | Log all submission access: `{user_id, submission_id, owned_by, accessed_at}` to admin_audit_logs; alert if user accesses >10 submissions not owned by them in 1 minute | Pattern detection via log analysis; rate limit 10 req/min/user on /submissions/{id} | Security Team · Sprint 2 |
 
 ### TH-05 — Missing Admin Audit Log
 
 | Strategy | Mitigation Actions | Implementation Notes | Owner + Sprint |
 |----------|------------------|---------------------|---------------|
-| **🛡️ Reduce L** | Implement append-only audit log for all admin actions: create/edit/delete problem, contest, user; log who, what, when, from where | Use separate append-only DB table or immutable object storage (S3 with Object Lock) | Backend Team · Sprint 1 |
+| **🛡️ Reduce L** | Implement append-only audit log (admin_audit_logs table per SDD) for all admin actions: create/edit/delete problem, contest, user; log who, what, when, from where | Use dedicated admin_audit_logs table with immutable append-only constraint or separate object storage (S3 with Object Lock) | Backend Team · Sprint 1 |
 | **💥 Reduce I** | Admin actions require secondary approval for destructive operations (delete problem, ban user); two-person rule | Implement approval workflow for DELETE operations; email notification to CISO | Backend Team · Sprint 2 |
 | **👁️ Increase D** | Alert on anomalous admin activity: bulk deletes, off-hours access, unusual IP; monthly audit log review by Security team | SIEM correlation rules; automated anomaly detection | Security Team · Sprint 1 |
 

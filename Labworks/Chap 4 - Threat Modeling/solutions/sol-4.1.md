@@ -12,14 +12,14 @@
 |-------|-------|
 | **Application Name** | CODING WAR |
 | **Application Version** | v1.0-beta |
-| **Application Description** | CODING WAR is an online judge platform built for university programming contests. It allows contestants to submit code solutions that are automatically compiled, executed, and graded against test cases. The system supports problem management, contest organization, real-time scoring, and role-based access for contestants, problem setters, and admins. |
+| **Application Description** | CODING WAR is an online judge platform built for university programming contests. It allows contestants to submit code solutions that are automatically compiled, executed, and graded against test cases. The system supports problem management, contest organization, real-time scoring, and role-based access for contestants and admins. Storage uses S3-compatible object storage. |
 | **Document Owner** | Security Engineering Team |
 | **Participants** | Security Engineer (lead), Backend Developer, Infrastructure/DevOps Engineer |
 | **Reviewer(s)** | Security Architect |
 | **Date Created** | \[Fill in\] |
 | **Last Updated** | \[Fill in\] |
 | **Methodology** | 4-Question Framework (Kohnfelder) + STRIDE per element + OWASP Threat Modeling Process |
-| **Scope Summary** | In scope: CODING WAR web application, API server, JudgeService, PostgreSQL, Redis, RabbitMQ, MinIO. Out of scope: client browsers, upstream SMTP provider, external CDN. |
+| **Scope Summary** | In scope: CODING WAR web application, API server, JudgeService, PostgreSQL, Redis, RabbitMQ, S3-compatible Storage. Out of scope: client browsers, upstream SMTP provider, external CDN. Internal communication uses mTLS for authentication between services. |
 | **Related Documents** | SRS Lab 2.3 \| Architecture Design Lab 3.2 \| API Spec Lab 3.3 \| Deployment Design Lab 3.4 |
 
 ---
@@ -29,9 +29,9 @@
 | # | Scenario | Type | Explanation |
 |---|----------|------|-------------|
 | 1 | Hacker steals DB password hashes via SQL injection | **S** | CIA violation (Confidentiality). The attacker bypasses a technical security control. No personal data handling policy is at issue. |
-| 2 | CODING WAR logs contestant IPs without a deletion policy or ToS disclosure | **P** | Privacy issue: data is collected beyond necessity, retained without policy, and users are not informed. No security breach occurred. |
+| 2 | CODING WAR logs contestant IPs without a deletion policy or ToS disclosure | **P** | Privacy issue: IP addresses are only logged in admin_audit_logs for admin action traceability, not for contestant registration. Data retention policy must be defined. |
 | 3 | Admin can view all submitted source code with no audit log | **B** | Both: Security (R — no audit trail, violates AAA) and Privacy (contestants' code is their intellectual work, accessed without transparency). |
-| 4 | System requires a phone number at registration but never uses it | **P** | Privacy: data minimization principle violated. Collecting unnecessary PII. No security control is bypassed. |
+| 4 | System requires a phone number at registration but never uses it | **N/A** | Not applicable: According to SRS UC-01, the system only requires Username, Email, and Password. Phone number is not collected. |
 | 5 | Error messages expose internal stack traces and system paths | **S** | Information Disclosure (CIA — Confidentiality). Leaking internal system details that could assist an attacker. |
 | 6 | Contestant email list shared with sponsor without consent | **P** | Privacy: data shared beyond the original collection purpose without user consent. No security control is broken. |
 | 7 | Session token doesn't expire after 30 days of inactivity | **S** | Security: session management flaw (broken authentication / AAA violation). Enables session hijacking after account compromise. |
@@ -45,8 +45,8 @@
 
 | Stage | Current Mechanism | Privacy Risk | Proposed Improvement |
 |-------|------------------|--------------|---------------------|
-| **Collect** | Required at registration: username, email, password, IP logged on login | Over-collection of IP address; no explicit purpose stated | Collect only what is needed; document IP logging purpose in Privacy Policy |
-| **Use** | Email for verification and notifications; IP for rate limiting; password hash for auth | IP could be used beyond stated purpose | Restrict IP use to security functions only; enforce purpose limitation |
+| **Collect** | Required at registration: username, email, password (per SRS UC-01). IP logged only in admin_audit_logs for admin actions | IP collection limited to admin audit trail only; no IP at registration | Document IP logging purpose in Privacy Policy: admin action traceability only |
+| **Use** | Email for verification and notifications; password hash for auth; IP only for admin audit | IP use is already restricted to admin audit logs | Maintain current restricted use; enforce purpose limitation in code |
 | **Share** | Unknown — no sharing policy documented | Risk of sharing with sponsors, analytics providers, or third parties without consent | Document data sharing policy; prohibit sharing without explicit consent |
 | **Retain** | No retention policy — data appears to be kept indefinitely | Unnecessary retention increases breach impact | Define retention periods: active accounts, inactive accounts (e.g., delete after 2 years of inactivity) |
 | **Delete** | No deletion mechanism for users | Users cannot exercise right to erasure | Implement account deletion with cascading anonymization of linked submissions |
@@ -75,10 +75,10 @@
 
 | Stage | Current Mechanism | Privacy Risk | Proposed Improvement |
 |-------|------------------|--------------|---------------------|
-| **Collect** | Uploaded by Problem Setters to MinIO | Test cases represent problem setter IP | Add metadata: problem setter name, creation date, classification |
-| **Use** | Used exclusively by JudgeService | Risk of unauthorized access if storage key is guessed or leaked | Use non-guessable storage keys (UUID-based); validate access before serving |
-| **Share** | Should be admin + judge only — but not enforced | Test case leak compromises contest integrity | Enforce access policy: test cases only accessible to (3) Admin and (4) Judge Engine |
-| **Retain** | Retained indefinitely in object storage | Unlimited accumulation of potentially sensitive data | Archive old test cases after contest ends; consider deletion after N years |
+| **Collect** | Uploaded by Admins to S3-compatible Storage (per SDD) | Test cases represent admin intellectual property | Add metadata: admin name, creation date, classification |
+| **Use** | Used exclusively by JudgeService with mTLS authentication | Risk of unauthorized access if storage key is guessed or leaked | Use non-guessable storage keys (UUID-based); validate access before serving; enforce mTLS |
+| **Share** | Should be admin + judge only — enforced via mTLS and network isolation | Test case leak compromises contest integrity | Maintain access policy: test cases only accessible to (3) Admin and (4) Judge Engine via mTLS |
+| **Retain** | Retained indefinitely in S3-compatible storage | Unlimited accumulation of potentially sensitive data | Archive old test cases after contest ends; consider deletion after N years |
 | **Delete** | No deletion policy | No lifecycle management | Define deletion: test cases deleted when problem is permanently retired |
 
 ---

@@ -10,9 +10,9 @@
 
 | ID | Name | Description & Why Protected | Tier | Sensitivity | Trust Levels with Access |
 |----|------|------------------------------|------|-------------|--------------------------|
-| **7** | **Session Tokens (Redis)** | JWT refresh tokens stored in Redis. Compromise → persistent session hijacking without needing credentials. | Tier 1 | CRITICAL | (2) Contestant — own token; (3) Admin; internal Redis only |
+| **7** | **Session Tokens (Redis)** | JWT refresh tokens stored in Redis. Compromise → persistent session hijacking without needing credentials. Note: Design uses stateless JWT with optional token revocation mechanism. | Tier 1 | CRITICAL | (2) Contestant — own token; (3) Admin; internal Redis only |
 | **8** | **Rate Limit State (Redis)** | Counter state for rate limiting per IP/user. Manipulation → rate limit bypass, enabling brute force. | Tier 2 | MEDIUM | (4) Internal Services; Infra team |
-| **9** | **System Logs** | Application logs containing request metadata, user IDs, submission IDs, IP addresses. | Tier 2 | HIGH | (3) Admin; DevOps; SIEM system — append-only ideally |
+| **9** | **Admin Audit Logs (admin_audit_logs table)** | Application logs containing admin actions, user IDs, IP addresses, timestamps. Stored in dedicated database table per SDD. | Tier 2 | HIGH | (3) Admin; DevOps; SIEM system — append-only ideally |
 | **10** | **gVisor/Sandbox Configuration** | seccomp profiles and sandbox configs controlling what judge-executed code can do. Compromise → sandbox escape enablement. | Tier 1 | CRITICAL | DevOps only; not accessible from app code |
 
 ---
@@ -40,8 +40,9 @@ Corrected full ranking after adding all assets:
 | EP ID | Endpoint | Trust Level Required | Current Controls | Missing Controls | Fix Priority |
 |-------|---------|---------------------|-----------------|-----------------|-------------|
 | **1.7** | GET /submissions/{id} | (2) Contestant | JWT Auth, TLS | Object-level ownership check (`submission.user_id == jwt.sub`) | CRITICAL |
-| **1.9** | POST/PUT /api/v1/problems/* | (3) Admin / (7) Problem Setter | JWT Auth, Role check | Audit log for all changes, version history | HIGH |
-| **3** | MinIO Object Storage | (4) Judge Engine, (8) SA | Internal network only | Pre-signed URL expiry (short TTL), Access logging | HIGH |
+| **1.9** | POST/PUT /api/v1/problems/* | (3) Admin | JWT Auth, Role check | Audit log for all changes (admin_audit_logs table), version history | HIGH |
+| **2** | RabbitMQ Message Queue | (4) Internal Services | Internal network only, mTLS between services | Message schema validation, Dead letter queue | HIGH |
+| **3** | S3-compatible Object Storage | (4) Judge Engine, (7) SA | Internal network only, mTLS authentication | Pre-signed URL expiry (short TTL), Access logging | HIGH |
 
 ---
 
