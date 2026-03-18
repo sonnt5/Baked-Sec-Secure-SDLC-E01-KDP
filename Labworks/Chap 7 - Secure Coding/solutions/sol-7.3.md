@@ -1,45 +1,59 @@
-# Solution 7.3 — Injection Prevention
+# Solution 7.3 — Injection Prevention: SQL, Command & Regex
 
-> [!WARNING]
-> **Reference Solution** — Complete the lab on your own before consulting this.
-
----
-
-## Task 2 — SQL Injection Analysis
-
-**Q1: Why ORDER BY cannot be parameterized:**
-SQL parameterization works by sending the query structure and the values separately to the database driver — the driver escapes the values and inserts them as literals. But `ORDER BY score` is not a value; it is part of the query structure (a column reference). You cannot tell the DB "ORDER BY $1" and pass "score" as $1 — the DB would interpret $1 as a string literal and execute `ORDER BY 'score'` (sorting by a constant), not by the column. So the fix must operate at the Python layer: validate the user input against an allowlist of known-safe column names, then embed the corresponding SQLAlchemy column object (not the string) into the query.
-
-**Q2: `f"%{q}%"` inside `ilike()` vs inside `db.execute(f"... LIKE '{q}'")`:**
-In `ilike(f"%{q}%")`, the `%{q}%` string is computed in Python and passed to SQLAlchemy as the value of a parameterized bind. SQLAlchemy generates `WHERE title ILIKE $1` and sends `%user_input%` as the bind variable — the DB driver handles escaping. The `%` wildcards are constants in the pattern, not user-controlled. In `db.execute(f"... LIKE '{q}'")`, the user's value is concatenated directly into the SQL string before it reaches the driver — any SQL metacharacter in `q` (single quote, percent, underscore) can alter the query.
-
-**Q3: IS-06 example:**
-`app/repositories/contest_repo.py` `get_contests_by_status()` — uses `db.execute(f"SELECT * FROM contests WHERE status = '{status}'")`where `status` comes from a query parameter. Fix: use `select(Contest).where(Contest.status == status)` with a `Literal['active','upcoming','ended']` Pydantic type on `status`.
+> [!NOTE]
+> **Reference Solution** — Work through the lab independently before reading this. Your approach may differ and still be correct.
 
 ---
 
-## Task 3 — Command Injection: 5 Elements
+## Key Insights
 
-| Element | Why necessary |
-|---------|--------------|
-| `shell=False` | Without this, the OS spawns a shell (`/bin/sh -c "..."`) that interprets metacharacters. With `shell=False`, each list element is a literal argument — no shell interpretation. |
-| Absolute interpreter path | Without absolute path, the OS searches `$PATH`. If an attacker can manipulate `$PATH` (e.g., via environment injection), they can redirect `python` to a malicious binary. |
-| `env={}` | An empty environment prevents `LD_PRELOAD`, `PYTHONPATH`, `PATH`, and other injectable variables. Without this, the judge subprocess inherits the app server's environment. |
-| `cwd="/sandbox"` | Sets the working directory to the sandbox root. Any relative path operations by the executed code resolve within the sandbox, not the app server's working directory. |
-| Language allowlist | Without this, a contestant could submit `language="python; rm -rf /"` — even with `shell=False`, this would be passed as a literal argument to the interpreter, which would likely fail but could produce unpredictable behavior. The allowlist maps user strings to `Path` objects, eliminating the string entirely. |
+### IS-01: Why ORDER BY cannot be parameterized
 
----
+SQL parameterization works by separating the query structure from the data values. A parameter placeholder (`$1`, `?`, `:name`) tells the database driver: "this position holds a value." The database engine uses it as data — it never interprets it as SQL syntax.
 
-## Task 4 — ReDoS
+`ORDER BY` sorts on a *column name*, which is part of the query structure — not a value. If you write `ORDER BY $1` with `$1 = 'score'`, the database sorts by the string `'score'` (a literal), not the column named `score`. The query runs, but the result is wrong and the sort order is meaningless.
 
-**Q1: Backtracking trace for `r"([a-zA-Z]+)*"` on `"aaaaaaaaX"`:**
-The regex tries to match `([a-zA-Z]+)*` against `"aaaaaaaaX"`. The outer `*` means "zero or more repetitions of the group". The inner `+` means "one or more letters". The engine explores: 8 letters in one group, then 7+1, then 7 letters then 1, then 6+2, 6+1+1, 5+3... the number of ways to partition 8 `a`s into groups of 1+ is exponential. When the `X` causes a final mismatch after all these attempts, the engine has explored 2^8 = 256 paths. At length 20, it's 2^20 = 1M. At length 30: 1 billion. This is catastrophic backtracking.
+The correct fix is an allowlist: a Python dict mapping user-supplied strings to SQLAlchemy column objects. The dict lookup happens before any SQL is constructed — if the key is not in the dict, a `ValueError` is raised before touching the database.
 
-**Q2: Threading timeout limitation:**
-The timeout wrapper cannot kill the thread — Python threads cannot be forcibly terminated. After the join timeout, the thread continues running in the background consuming CPU. In a high-request-rate scenario, many concurrent ReDoS requests can exhaust the thread pool. The fix is a runtime mitigation, not a prevention. Pre-compiled linear patterns are a true prevention because they eliminate the backtracking class of vulnerability entirely.
+```python
+ALLOWED_SORT_FIELDS = {
+    'score': Submission.score,
+    'penalty': Submission.penalty,
+    'time': Submission.execution_time_ms,
+    'submitted_at': Submission.submitted_at,
+}
+```
 
-**Q3: Why `EXPECTED_VERDICT_PATTERN` is linear:**
-`^(ACCEPTED|WRONG_ANSWER|TIME_LIMIT_EXCEEDED|MEMORY_LIMIT_EXCEEDED|RUNTIME_ERROR)$` has no nested quantifiers. Each alternative is a literal string (no `+`, `*`, or `?` inside). The regex engine needs at most one pass through the input to match or reject. The alternation uses a fixed set of known strings, so the engine can use Aho-Corasick or similar O(n) matching internally.
+### IS-02: Why ilike() is safe and raw SQL is not
+
+`Problem.title.ilike(f"%{q}%")` is safe because SQLAlchemy passes `q` as a bind variable. The `%{q}%` string is the *value* of the LIKE clause — it is passed to the database driver as a parameter, and the driver handles any special characters. The SQL that reaches the database engine is:
+
+```sql
+SELECT * FROM problems WHERE title ILIKE $1
+-- with $1 = '%user search query%'
+```
+
+`db.execute(f"SELECT * FROM problems WHERE title LIKE '%{q}%'")` is unsafe because `q` is inserted directly into the SQL string before it reaches the database driver. The driver sees a complete SQL statement and executes it verbatim.
+
+### IS-03: The five elements of safe subprocess execution
+
+Each element closes a specific attack surface:
+
+| Element | Attack it prevents |
+|---------|-------------------|
+| `shell=False` + list API | Shell metacharacters (`;`, `&&`, `|`, `$()`) are not interpreted — they are passed as literal arguments to the interpreter |
+| Absolute interpreter path (`/usr/bin/python3`) | PATH hijacking — an attacker who can write to a directory in PATH cannot substitute a malicious binary |
+| `env={}` (empty environment) | `LD_PRELOAD` injection, `PYTHONPATH` manipulation, and other environment-variable attacks |
+| `cwd="/sandbox"` | Relative path traversal within the execution context |
+| Validate `source_path.is_absolute()` | Ensures the file path was constructed by the application, not passed through from user input |
+
+### IS-05: Timeout vs. linear pattern — when to use each
+
+A timeout (Approach 1) is a circuit breaker — it limits the damage of a ReDoS but does not prevent the CPU spike. For the brief window before the timeout fires, a worker thread is saturated. Under sustained attack, this can still degrade service.
+
+A pre-compiled linear pattern (Approach 2) runs in O(n) time regardless of input content — there is no backtracking, so no crafted input can cause exponential cost. This is the correct approach for any pattern the application controls (like verdict format validation).
+
+Use Approach 1 only when patterns come from an external source and you cannot guarantee they are safe. Use Approach 2 whenever you can define the pattern yourself.
 
 ---
 

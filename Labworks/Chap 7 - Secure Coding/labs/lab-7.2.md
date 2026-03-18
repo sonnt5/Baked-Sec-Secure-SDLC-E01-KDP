@@ -1,67 +1,77 @@
-# Lab 7.2 — Low-Level Flaws: Integer Overflow, Memory Safety & TOCTOU
+# Lab 7.2 — Integer Precision, Race Conditions & TOCTOU
 
 > **Chapter 7 · Secure Coding Foundations · OWASP ASVS v5.0.0 Aligned**
-> Input: CODING WAR codebase scenarios | Output: Vulnerability Analysis Report + Fixed Code
-
-> [!NOTE]
-> **OWASP ASVS v5.0.0:** ASVS V15.4.2 — *"Verify that checks on a resource's state are performed as close as possible to when it is used, and ideally atomically, to prevent TOCTOU bugs."* V15.4.1 — *"Verify that shared objects in multi-threaded code are protected using appropriate locking mechanisms."* V15.3.5 — *"Verify that variables are of the correct expected type before use."*
+> Input: `code/vulnerable/scoring.py`, `code/vulnerable/submission_service.py`
+> Output: Vulnerability Analysis + Fixed Implementations
 
 ## Learning Objectives
 
-- Identify integer overflow/underflow in Python — especially when `int` is used for scoring/quota calculations.
-- Analyze length validation failures that lead to buffer over-read class bugs.
-- Understand TOCTOU and apply atomic operations for filesystem operations.
-- Map low-level bugs → assets → risk (3 axes analysis).
+- Diagnose arithmetic precision and atomicity bugs in production Python code.
+- Reason about the security impact of low-level implementation choices — not just correctness.
+- Produce fixed implementations and explain why each fix eliminates the vulnerability.
+
+## Code Files
+
+| File | Role |
+|------|------|
+| `code/vulnerable/scoring.py` | Read before writing anything |
+| `code/vulnerable/submission_service.py` | Read before writing anything |
+| `code/fixed/scoring.py` | Reference implementation — consult after finishing your own |
+| `code/fixed/submission_service.py` | Reference implementation — consult after finishing your own |
 
 ---
 
-## Task 1 — Integer/Arithmetic Analysis
+## Task 1 — Diagnose the Vulnerabilities
 
-Study the vulnerable code in [`code/vulnerable/scoring.py`](../code/vulnerable/scoring.py). It contains three scenarios.
+Read both vulnerable files. Before writing any code, document your findings.
 
-For each scenario, complete the analysis table and then study the fixed version in [`code/fixed/scoring.py`](../code/fixed/scoring.py).
+For each bug you identify: describe the root cause, construct a realistic attack or failure scenario (not a theoretical one — describe what an attacker or a race condition would actually do), identify which CODING WAR asset is affected, and connect it to the code contracts you defined in Lab 7.1.
 
-| Scenario | Bug Type | Asset Affected | Risk Level | Why This Risk Level? | Fix Approach |
-|----------|---------|---------------|-----------|---------------------|-------------|
-| **A: Float precision** (`calculate_penalty_score`) | Implicit `int→float→int`; truncation asymmetry | Contest scores — HVA (prize validity) | High | Float imprecision in scoring can alter contest standings; asymmetric truncation systematically disadvantages certain contestants | Use `Decimal` type for all scoring calculations; `round()` with explicit rounding mode; test large penalty scenarios |
-| **B: TOCTOU counter** (`increment_submission_count`) | Read-check-increment not atomic (race condition) | Submission quota — integrity invariant | High | Two concurrent requests can both pass the check and both increment → 11 submissions when limit is 10; ASVS V15.4.1 violation | Use Redis INCR atomically with Lua script: not GET→check→SET |
-| **C: Negative exec time** (`is_within_time_limit`) | Missing lower-bound validation on trusted-enough input | Execution time limit enforcement | Medium-High | If judge result JSON is from a compromised judge service, negative `execution_ms` bypasses the time limit — all submissions appear fast | Validate: `0 <= execution_ms <= MAX_REASONABLE` |
-
-**Exercise:** Read `code/fixed/scoring.py` and answer:
-1. Why does Scenario A use `Decimal("20")` with quotes, not `Decimal(20.0)`?
-2. Why is a Redis Lua script the right fix for Scenario B rather than a Python-level lock?
-3. What is the value of `_MAX_REASONABLE_EXECUTION_MS` and what is the business justification?
+The vulnerable files contain three distinct bugs in `scoring.py` and one in `submission_service.py`. Find them all.
 
 ---
 
-## Task 2 — TOCTOU Analysis: Submission File Handling
+## Task 2 — Fix `scoring.py`
 
-Study the vulnerable code in [`code/vulnerable/submission_service.py`](../code/vulnerable/submission_service.py).
+Write a corrected implementation of the three functions in `scoring.py`.
 
-| Aspect | Analysis |
-|--------|---------|
-| **TOCTOU gap** | Between `os.path.exists()` check (T1) and `open()` write (T2) — attacker can replace path with a symlink pointing to `/etc/passwd` or `/judge/test_cases/*.txt` |
-| **Asset at risk** | If symlink points to test case files → source_code overwrites test cases → contest integrity failure. If symlink points to judge config → arbitrary file write → potential RCE. |
-| **Severity** | High — contest integrity at risk if judge has write access to test cases. Critical if symlink points to application config/secrets. |
-| **ASVS violation** | V15.4.2: check and use not atomic. Also V5.1 (File Handling — no documentation of temp file handling). Also V5.3.1 (file path canonicalization). |
-| **Fix principle** | Use `tempfile.NamedTemporaryFile(dir=SAFE_DIR, delete=False)` — runtime ensures atomic creation. NEVER use predictable temp file paths. |
+Your implementations will be assessed on whether they actually solve the vulnerability — not whether they match the reference in `code/fixed/`. If you choose a different approach, document your reasoning and what property your approach guarantees.
 
-Study [`code/fixed/submission_service.py`](../code/fixed/submission_service.py) and answer:
-1. Why does `SUBMISSION_TEMP_DIR` matter? What attack does using `/tmp` enable?
-2. Why does the fixed function return a `pathlib.Path` object instead of a `str`?
-3. What does `delete=False` do, and who is responsible for deleting the file?
+After writing your implementation, verify it against at least these inputs:
+
+```python
+# calculate_penalty_score
+assert calculate_penalty_score(1000, 3, 20) == 940
+assert calculate_penalty_score(100, 5, ...) == 99   # what penalty gives 98.5 before rounding?
+assert isinstance(calculate_penalty_score(500, 0, 20), int)
+
+# is_within_time_limit
+assert is_within_time_limit(5000, 10000) == True
+assert is_within_time_limit(-1, 10000) raises ValueError  # negative must be rejected
+```
 
 ---
 
-## Task 3 — ASVS V15.4 Safe Concurrency Compliance Check
+## Task 3 — Fix `submission_service.py`
 
-| ASVS Control | Description | CODING WAR Status | Evidence / Gap |
-|-------------|-------------|------------------|---------------|
-| **15.4.1** | Shared objects in multi-threaded code protected by appropriate locking | Partial | Redis atomic Lua scripts for counters. Gap: `verdict_aggregate` in memory during bulk contest evaluation — needs audit. |
-| **15.4.2** | Checks on resource state performed atomically (TOCTOU prevention) | Fail | TOCTOU in temp file creation (Task 2). TOCTOU in submission count check (Task 1 Scenario B). Fix: atomic patterns implemented in fixed code. |
-| **15.4.3** | Locks used consistently to avoid thread starvation | Partial | Redis TTL on rate limit keys prevents indefinite lock. Gap: async DB transaction not always using `FOR UPDATE` — audit required for contest leaderboard updates. |
-| **15.4.4** | Resource allocation policies prevent thread starvation | Partial | Max concurrent judges configured per instance. Gap: `asyncio.Semaphore` for judge queue not yet implemented. |
-| \[Team adds\] | | | |
+Write a corrected implementation of `save_and_verify_submission`.
+
+Your implementation must eliminate the TOCTOU gap. In your code — either as a docstring or inline comments — explain:
+- Why the original check-then-act sequence is exploitable
+- What property of your fix makes exploitation impossible
+
+---
+
+## Task 4 — ASVS V15.4 Assessment
+
+After completing your fixes, assess CODING WAR against these ASVS V15.4 controls. For each, state Pass, Fail, or Partial — and for anything that is not a full Pass, state the specific remaining gap.
+
+| Control | Description |
+|---------|-------------|
+| V15.4.1 | Shared objects in concurrent code are protected by appropriate locking |
+| V15.4.2 | Checks on resource state are performed atomically (TOCTOU prevention) |
+| V15.4.3 | Locks are used consistently across all access paths to avoid starvation |
+| V15.4.4 | Resource allocation policies prevent quota exhaustion |
 
 ---
 
@@ -69,12 +79,12 @@ Study [`code/fixed/submission_service.py`](../code/fixed/submission_service.py) 
 
 | Criterion | Points | Description |
 |-----------|--------|-------------|
-| Integer/Arithmetic Analysis (3 scenarios) | **30** | Each scenario: bug type identified correctly (3 pts), asset + risk level explained via 3 axes (4 pts), fix approach specific (3 pts) |
-| Fixed Code Analysis — Scenario A + B | **25** | Scenario A: explains Decimal vs float (10 pts); Scenario B: explains atomic Lua script necessity (15 pts). Analysis must show understanding, not just restate the code |
-| TOCTOU Analysis (table + fixed code analysis) | **25** | TOCTOU gap explained with timing (5 pts); asset at risk identified (5 pts); fix explanation covers controlled directory + atomic creation + Path return type (15 pts) |
-| ASVS V15.4 Compliance Check | **20** | 4 controls assessed honestly; Fail items have specific gap description; Partial items explain what is missing |
+| Vulnerability diagnosis | **25** | All four bugs found; each has a realistic scenario; asset impact connects to Lab 7.1 contracts |
+| `scoring.py` | **35** | All three functions correct; reasoning documented where approach differs from the obvious path |
+| `submission_service.py` | **30** | TOCTOU gap eliminated; explanation in code is technically accurate |
+| ASVS V15.4 assessment | **10** | Honest assessment; Partial/Fail entries name the specific gap |
 | **Total** | **100** | |
 
 ---
 
-*See the reference solution at [solutions/sol-7.2.md](../solutions/sol-7.2.md)*
+*See the reference solution at [solutions/sol-7.2.md](../solutions/sol-7.2.md) after completing the lab.*

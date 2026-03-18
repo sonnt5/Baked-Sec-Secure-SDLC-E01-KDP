@@ -70,7 +70,7 @@ EXPECTED_VERDICT_PATTERN = re.compile(
 # Execution time: non-negative integer (ms), max 8 digits
 EXECUTION_TIME_PATTERN = re.compile(r"^\d{1,8}$")
 
-# Username: alphanumeric + underscore, 3–32 chars (no nested quantifiers)
+# Username: alphanumeric + underscore, 3 to 32 chars (no nested quantifiers)
 USERNAME_PATTERN = re.compile(r"^[a-zA-Z0-9_]{3,32}$")
 
 

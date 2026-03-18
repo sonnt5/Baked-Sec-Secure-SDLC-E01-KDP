@@ -1,82 +1,158 @@
 # semgrep-rules/coding-war-custom.yaml
-# Custom Semgrep rules for CODING WAR Python/FastAPI backend
-# Lab 7.6: SAST/SCA Triage — run with:
+# Reference Semgrep rules for CODING WAR — Python/FastAPI backend.
+#
+# Purpose (Lab 7.6):
+#   This file is the reference for Lab 7.6 Task 2. Read it to understand
+#   the expected level of specificity, then write your own rules in a
+#   separate file. A rule that targets a generic pattern is not useful —
+#   each rule here enforces a specific code contract from Lab 7.1.
+#
+# Run against the codebase:
 #   semgrep scan --config semgrep-rules/coding-war-custom.yaml app/
 #
-# Rule IDs follow the pattern: coding-war.<category>.<rule-name>
-# Severity: ERROR = blocking (Critical/High in SCSP SLA)
-#           WARNING = non-blocking (Medium)
-#           INFO = advisory (Low)
+# Run built-in tests (inline annotations below):
+#   semgrep --test semgrep-rules/
+#
+# Inline test annotations:
+#   # ruleid: <rule-id>   this line MUST match the rule (true positive)
+#   # ok: <rule-id>       this line must NOT match (true negative)
+#
+# Rule ID convention: coding-war.<contract-id>.<short-description>
+# Severity:
+#   ERROR   — blocking; Critical or High in the SCSP remediation SLA
+#   WARNING — non-blocking; Medium
+#   INFO    — advisory; Low
 
 rules:
 
-  # -------------------------------------------------------------------------
-  # CI-01: All DB access must go through the repository layer
-  # No handler module may import db_session or call db.execute() directly.
-  # ASVS V1.2.4
-  # -------------------------------------------------------------------------
-  - id: coding-war.ci01.direct-db-in-handler
-    patterns:
-      - pattern: |
-          from app.db import $DB_SESSION
-      - pattern-inside: |
-          # app/api/...
-          ...
-    message: >
-      [CI-01] Handler module imports db_session directly. All DB access must
-      go through repository classes (app/repositories/). Move the query to the
-      appropriate *Repository class and inject it via FastAPI Depends().
-    languages: [python]
-    severity: ERROR
-    metadata:
-      asvs: "V1.2.4"
-      cwe: "CWE-89"
-      category: "security"
-
-  # -------------------------------------------------------------------------
-  # CI-01 variant: raw db.execute() with string argument (SQL injection risk)
-  # -------------------------------------------------------------------------
-  - id: coding-war.ci01.raw-sql-execute
+  # ---------------------------------------------------------------------------
+  # CI-01a: db.execute() with f-string (SQL injection — IS-01, IS-02)
+  # Contract: all DB access uses SQLAlchemy ORM or parameterized constructs.
+  # Vulnerable: code/vulnerable/submission_repo.py
+  # Fixed:      code/fixed/submission_repo.py
+  # ASVS V1.2.4 / CWE-89
+  # ---------------------------------------------------------------------------
+  - id: coding-war.ci01.raw-sql-fstring
     pattern: |
-      $DB.execute($STR + ...)
+      $DB.execute(f"...")
     message: >
-      [CI-01] db.execute() called with string concatenation. This is a SQL
-      injection risk. Use SQLAlchemy ORM or parameterized text() constructs.
-      For ORDER BY columns: use an allowlist dict (ALLOWED_SORT_FIELDS).
+      [CI-01] db.execute() with an f-string — SQL injection risk.
+      User-supplied values interpolated into SQL are not parameterized.
+      Fix: use SQLAlchemy ORM (select().where()) or sqlalchemy.text()
+      with explicit bind params: text("... WHERE id = :id", id=value).
       ASVS V1.2.4 / CWE-89.
     languages: [python]
     severity: ERROR
     metadata:
       asvs: "V1.2.4"
       cwe: "CWE-89"
+      contract: "CI-01"
+    # Inline tests
+    # ruleid: coding-war.ci01.raw-sql-fstring
+    # db.execute(f"SELECT * FROM submissions WHERE id={submission_id}")
+    #
+    # ok: coding-war.ci01.raw-sql-fstring
+    # db.execute(select(Submission).where(Submission.id == submission_id))
 
-  # -------------------------------------------------------------------------
-  # CI-03: Every /admin endpoint must have @require_admin_mfa
-  # -------------------------------------------------------------------------
-  - id: coding-war.ci03.admin-missing-mfa
+  # ---------------------------------------------------------------------------
+  # CI-01b: db.execute() with string concatenation
+  # Same contract as CI-01a — catches + operator pattern.
+  # ASVS V1.2.4 / CWE-89
+  # ---------------------------------------------------------------------------
+  - id: coding-war.ci01.raw-sql-concat
+    pattern: |
+      $DB.execute($QUERY + ...)
+    message: >
+      [CI-01] db.execute() with string concatenation — SQL injection risk.
+      Concatenated SQL strings are not parameterized regardless of the
+      value's origin. For ORDER BY columns (which cannot be parameterized):
+      use an allowlist dict mapping validated strings to SQLAlchemy column
+      objects — see ALLOWED_SORT_FIELDS in app/repositories/submission_repo.py.
+      ASVS V1.2.4 / CWE-89.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      asvs: "V1.2.4"
+      cwe: "CWE-89"
+      contract: "CI-01"
+
+  # ---------------------------------------------------------------------------
+  # CI-01c: Handler module imports db_session directly (bypasses repository)
+  # Contract: no direct DB access outside app/repositories/.
+  # ASVS V1.2.4 / CWE-89
+  # ---------------------------------------------------------------------------
+  - id: coding-war.ci01.direct-db-in-handler
     patterns:
       - pattern: |
-          @$ROUTER.post("/admin/...")
-          async def $FUNC(...):
-              ...
+          from app.db import $ANYTHING
+      - pattern-inside: |
+          # app/api/...
+          ...
+    message: >
+      [CI-01] Handler module imports from app.db directly. All database
+      access must go through repository classes in app/repositories/.
+      Inject the repository via FastAPI Depends() instead of importing
+      the session or engine directly into a handler.
+      ASVS V1.2.4 / CWE-89.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      asvs: "V1.2.4"
+      cwe: "CWE-89"
+      contract: "CI-01"
+
+  # ---------------------------------------------------------------------------
+  # CI-03: Every /admin/* endpoint must declare Depends(require_admin_mfa)
+  # Contract: MFA required for all admin actions.
+  # ASVS V6.5 / CWE-306
+  # ---------------------------------------------------------------------------
+  - id: coding-war.ci03.admin-endpoint-missing-mfa
+    patterns:
+      - pattern-either:
+          - pattern: |
+              @$ROUTER.get("/admin/...")
+              async def $FUNC(...):
+                  ...
+          - pattern: |
+              @$ROUTER.post("/admin/...")
+              async def $FUNC(...):
+                  ...
+          - pattern: |
+              @$ROUTER.put("/admin/...")
+              async def $FUNC(...):
+                  ...
+          - pattern: |
+              @$ROUTER.delete("/admin/...")
+              async def $FUNC(...):
+                  ...
+          - pattern: |
+              @$ROUTER.patch("/admin/...")
+              async def $FUNC(...):
+                  ...
       - pattern-not: |
-          @$ROUTER.post("/admin/...")
+          @$ROUTER.$METHOD("/admin/...")
           async def $FUNC(..., $MFA=Depends(require_admin_mfa), ...):
               ...
     message: >
-      [CI-03] Admin endpoint is missing Depends(require_admin_mfa). Every
-      /admin/* route must enforce MFA session validation. Add
-      `_mfa=Depends(require_admin_mfa)` to the function signature.
-      ASVS V6.5 / CWE-306.
+      [CI-03] Admin endpoint is missing Depends(require_admin_mfa).
+      Every /admin/* route must verify the current user has completed
+      MFA within the session window before executing. Add:
+        _mfa: None = Depends(require_admin_mfa)
+      to the function signature. ASVS V6.5 / CWE-306.
     languages: [python]
     severity: ERROR
     metadata:
       asvs: "V6.5"
       cwe: "CWE-306"
+      contract: "CI-03"
 
-  # -------------------------------------------------------------------------
-  # CI-04: subprocess must never use shell=True outside sandbox_runner.py
-  # -------------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
+  # CI-04: subprocess.run() with shell=True outside sandbox_runner.py
+  # Contract: command injection prevention — list API only.
+  # Vulnerable: code/vulnerable/judge_service.py
+  # Fixed:      code/fixed/judge_service.py
+  # ASVS V1.2.5 / CWE-78
+  # ---------------------------------------------------------------------------
   - id: coding-war.ci04.subprocess-shell-true
     patterns:
       - pattern: subprocess.run(..., shell=True, ...)
@@ -84,80 +160,199 @@ rules:
           # app/services/sandbox_runner.py
           ...
     message: >
-      [CI-04] subprocess.run() called with shell=True outside
-      sandbox_runner.py. This allows OS command injection via shell
-      metacharacters. Use the list API: subprocess.run([cmd, arg1, arg2],
-      shell=False). ASVS V1.2.5 / CWE-78.
+      [CI-04] subprocess.run() with shell=True outside sandbox_runner.py.
+      shell=True passes the command to /bin/sh, which interprets metacharacters
+      (;, &&, |, $(), backtick). An attacker who controls any argument can
+      inject arbitrary OS commands. Fix: list API with absolute interpreter path:
+        subprocess.run(["/usr/bin/python3", str(source_path)], shell=False,
+                       env={}, cwd="/sandbox")
+      See ALLOWED_LANGUAGES in app/services/judge_service.py (fixed version).
+      ASVS V1.2.5 / CWE-78.
     languages: [python]
     severity: ERROR
     metadata:
       asvs: "V1.2.5"
       cwe: "CWE-78"
+      contract: "CI-04"
+    # Inline tests
+    # ruleid: coding-war.ci04.subprocess-shell-true
+    # subprocess.run(f"{language} {source_path}", shell=True, capture_output=True)
+    #
+    # ok: coding-war.ci04.subprocess-shell-true
+    # subprocess.run(["/usr/bin/python3", str(source_path)], shell=False, env={})
 
-  # -------------------------------------------------------------------------
-  # CI-06: Logging must not include passwords, tokens, or source code
-  # -------------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
+  # CI-05: Verdict records are append-only — no UPDATE on verdicts table
+  # Contract: contest integrity — verdicts cannot be silently tampered with.
+  # ASVS V15.3 / CWE-284
+  # ---------------------------------------------------------------------------
+  - id: coding-war.ci05.verdict-update-forbidden
+    patterns:
+      - pattern-either:
+          - pattern: |
+              $DB.execute("UPDATE verdicts ...")
+          - pattern: |
+              $DB.execute(f"UPDATE verdicts ...")
+          - pattern: |
+              update(Verdict).where(...)
+    message: >
+      [CI-05] Verdict records must be append-only. Modifying an existing
+      verdict record violates contest integrity — a tampered verdict
+      would be invisible in the audit trail. Create a new Verdict record
+      instead. The application DB user must not hold UPDATE privilege on
+      the verdicts table (enforce at the DB level, not only in code).
+      ASVS V15.3 / CWE-284.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      asvs: "V15.3"
+      cwe: "CWE-284"
+      contract: "CI-05"
+
+  # ---------------------------------------------------------------------------
+  # CI-06: Sensitive fields must not appear as logger kwargs
+  # Contract: no PII or secrets in application logs.
+  # Vulnerable: code/vulnerable/error_handlers.py (passes exc.args to logger)
+  # Fixed:      code/fixed/error_handlers.py
+  # ASVS V16.2.5 / CWE-532
+  # ---------------------------------------------------------------------------
   - id: coding-war.ci06.log-sensitive-field
     patterns:
       - pattern-either:
+          - pattern: $LOGGER.info(..., password=..., ...)
+          - pattern: $LOGGER.info(..., token=..., ...)
+          - pattern: $LOGGER.info(..., source_code=..., ...)
+          - pattern: $LOGGER.error(..., password=..., ...)
+          - pattern: $LOGGER.error(..., token=..., ...)
+          - pattern: $LOGGER.error(..., source_code=..., ...)
+          - pattern: $LOGGER.warning(..., password=..., ...)
+          - pattern: $LOGGER.warning(..., token=..., ...)
+          - pattern: $LOGGER.debug(..., password=..., ...)
+          - pattern: $LOGGER.debug(..., token=..., ...)
           - pattern: logging.info(..., password=..., ...)
-          - pattern: logging.info(..., token=..., ...)
-          - pattern: logging.info(..., source_code=..., ...)
-          - pattern: logger.info(..., password=..., ...)
-          - pattern: logger.info(..., token=..., ...)
-          - pattern: logger.info(..., source_code=..., ...)
-          - pattern: logger.error(..., password=..., ...)
-          - pattern: logger.error(..., token=..., ...)
+          - pattern: logging.error(..., password=..., ...)
+          - pattern: logging.warning(..., password=..., ...)
     message: >
       [CI-06] Sensitive field (password / token / source_code) passed to
-      logger. This field must be redacted or excluded from log calls.
-      Use LoggingMiddleware.REDACT_FIELDS or exclude the field from the
-      extra={} dict. ASVS V16.2.5 / CWE-532.
+      a logger call. Logs are often forwarded to third-party aggregators
+      and have broad access within an organisation. Exclude the field from
+      the extra={} dict or hash it before logging. Never log credentials,
+      session tokens, or contestant source code — even at DEBUG level.
+      ASVS V16.2.5 / CWE-532.
     languages: [python]
     severity: ERROR
     metadata:
       asvs: "V16.2.5"
       cwe: "CWE-532"
+      contract: "CI-06"
 
-  # -------------------------------------------------------------------------
-  # Hardcoded secret detection (complements detect-secrets pre-commit hook)
-  # -------------------------------------------------------------------------
-  - id: coding-war.secrets.hardcoded-jwt-secret
+  # ---------------------------------------------------------------------------
+  # CI-07: Traceback must never appear in HTTP response body
+  # Contract: error responses expose no internal implementation details.
+  # Vulnerable: code/vulnerable/error_handlers.py
+  # Fixed:      code/fixed/error_handlers.py
+  # ASVS V16.5.1 / CWE-209
+  # ---------------------------------------------------------------------------
+  - id: coding-war.ci07.traceback-in-response
     patterns:
-      - pattern: |
-          JWT_SECRET = "$SECRET"
+      - pattern-either:
+          - pattern: |
+              JSONResponse(..., content={..., "traceback": ..., ...})
+          - pattern: |
+              JSONResponse(..., content={..., "stack_trace": ..., ...})
+          - pattern: |
+              return {"traceback": $TB, ...}
+          - pattern: |
+              return {"error": str($EXC), "traceback": ..., ...}
+    message: >
+      [CI-07] Traceback or stack trace in HTTP response body. This exposes
+      server file paths, library versions, and DB schema to any client that
+      can trigger an error. Fix: return only error_code + generic message +
+      short error_ref (correlation ID). Log the full traceback internally via
+      logger.debug(..., exc_info=True). See generic_exception_handler() in
+      app/core/error_handlers.py (fixed version) for the correct pattern.
+      ASVS V16.5.1 / CWE-209.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      asvs: "V16.5.1"
+      cwe: "CWE-209"
+      contract: "CI-07"
+    # Inline tests
+    # ruleid: coding-war.ci07.traceback-in-response
+    # return JSONResponse(status_code=500, content={"error": str(exc), "traceback": tb})
+    #
+    # ok: coding-war.ci07.traceback-in-response
+    # return JSONResponse(status_code=500, content={"error_code": "INTERNAL_ERROR", "error_ref": ref})
+
+  # ---------------------------------------------------------------------------
+  # Hardcoded JWT_SECRET or SECRET_KEY in source
+  # Complements the detect-secrets pre-commit hook.
+  # ASVS V11.5 / CWE-798
+  # ---------------------------------------------------------------------------
+  - id: coding-war.secrets.hardcoded-secret
+    patterns:
+      - pattern-either:
+          - pattern: |
+              JWT_SECRET = "$VALUE"
+          - pattern: |
+              SECRET_KEY = "$VALUE"
       - pattern-not: |
           JWT_SECRET = os.environ[...]
       - pattern-not: |
           JWT_SECRET = os.getenv(...)
+      - pattern-not: |
+          SECRET_KEY = os.environ[...]
+      - pattern-not: |
+          SECRET_KEY = os.getenv(...)
     message: >
-      Hardcoded JWT secret detected. Secrets must never appear in source code.
-      Load from environment variable or Secret Manager:
-        JWT_SECRET: str = Field(..., env="JWT_SECRET")
+      Hardcoded secret detected. Secrets committed to version control are
+      permanently exposed — even after deletion they remain in git history.
+      Load from environment or a secrets manager:
+        JWT_SECRET: str = Field(..., env="JWT_SECRET")   # pydantic-settings
+        JWT_SECRET = os.environ["JWT_SECRET"]            # stdlib
       ASVS V11.5 / CWE-798.
     languages: [python]
     severity: ERROR
     metadata:
       asvs: "V11.5"
       cwe: "CWE-798"
+    # Inline tests
+    # ruleid: coding-war.secrets.hardcoded-secret
+    # JWT_SECRET = "super_secret_key_do_not_share"
+    #
+    # ok: coding-war.secrets.hardcoded-secret
+    # JWT_SECRET = os.environ["JWT_SECRET"]
 
-  # -------------------------------------------------------------------------
-  # ReDoS: nested quantifiers in user-supplied regex patterns
-  # -------------------------------------------------------------------------
-  - id: coding-war.ci02.redos-nested-quantifier
+  # ---------------------------------------------------------------------------
+  # ReDoS: re.match/search/fullmatch without safe_regex_match() wrapper
+  # Note: WARNING, not ERROR — pre-compiled linear patterns are safe.
+  #   Use judgment: flag for review, not automatic block.
+  # Vulnerable: code/vulnerable/code_validator.py
+  # Fixed:      code/fixed/code_validator.py
+  # ASVS V1.2.9 / CWE-1333
+  # ---------------------------------------------------------------------------
+  - id: coding-war.ci02.regex-without-timeout
     patterns:
-      - pattern: re.match($PATTERN, $TEXT)
-      - pattern: re.search($PATTERN, $TEXT)
-      - metavariable-regex:
-          metavariable: $PATTERN
-          regex: '.*\(.*[+*]\).*[+*].*'   # nested quantifier heuristic
+      - pattern-either:
+          - pattern: re.match($PATTERN, $TEXT)
+          - pattern: re.search($PATTERN, $TEXT)
+          - pattern: re.fullmatch($PATTERN, $TEXT)
+      - pattern-not: |
+          safe_regex_match(...)
     message: >
-      Potential ReDoS: regex pattern contains nested quantifiers which may
-      cause catastrophic backtracking on crafted input. Use safe_regex_match()
-      with a timeout, or replace with a linear-time alternative.
+      [CI-02] Regex operation without a timeout on potentially untrusted input.
+      A pattern with nested quantifiers (e.g. (a+)+, ([A-Z_]+)*) combined with
+      a crafted input string causes catastrophic backtracking, hanging the worker.
+      Options:
+        1. Pre-compiled linear pattern (preferred): re.compile(r"^(ACCEPTED|...)$")
+           — no nested quantifiers, O(n) time, no timeout needed.
+        2. safe_regex_match(pattern, text, timeout_sec=1.0) wrapper for patterns
+           from external sources (see app/validators/code_validator.py — fixed).
       ASVS V1.2.9 / CWE-1333.
     languages: [python]
     severity: WARNING
     metadata:
       asvs: "V1.2.9"
       cwe: "CWE-1333"
+      contract: "CI-02"
