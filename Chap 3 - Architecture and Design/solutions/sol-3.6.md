@@ -14,7 +14,7 @@
 |-----------|-------|---------|
 | Clear module boundaries; each component follows SRP | 4 | 5 clearly separated modules (Auth, Problem, Contest, Judge, Scoreboard). JudgeService delegates verdict logic to a dedicated `VerdictDeterminer`. |
 | Design allows independent unit testing of components | 3 | Interfaces (ISubmissionRepo, IJudgeRunner) enable mocking. However, JudgeWorker's RabbitMQ integration lacks a clear abstraction for isolated testing. |
-| Architecture supports horizontal scaling of critical components | 3 | JudgeWorker can scale horizontally. External session storage (Redis) is proposed but not fully reflected in the design artifacts. |
+| Architecture supports horizontal scaling of critical components | 3 | JudgeWorker can scale horizontally to meet 1,000 concurrent users (PER-01). External session storage (Redis) is proposed but not fully reflected in the design artifacts. |
 | Violations of Law of Demeter / inappropriate intimacy | 2 | API contracts are consistent with the ER model. Some API specs (Lab 3.3) lack a fully defined error response schema. |
 | **Total** | **12/16** | Good design; a few areas are incomplete |
 
@@ -43,9 +43,9 @@
 | Criterion | Score | Evidence |
 |-----------|-------|---------|
 | Each module has a clear bounded context | 4 | 5 modules do not overlap. JudgeWorker is separated from the API server. |
-| Cross-cutting concerns are centralized | 3 | Auth middleware is centralized at the API Gateway. Logging strategy is not clearly represented in the design. |
+| Cross-cutting concerns are centralized | 2 | Auth middleware is centralized at the API Gateway. Admin audit logging is designed (admin_audit_logs table per SDD), but centralized logging strategy for the entire system is not clearly represented in the design. |
 | No business logic in the presentation or data layer | 2 | API specs define pre/postconditions clearly. However, a few API endpoints still show business rule leakage into the controller layer (from Lab 3.3). |
-| **Total** | **9/12** | Good; logging and error-handling strategy need attention |
+| **Total** | **8/12** | Good; centralized logging strategy needs attention |
 
 ---
 
@@ -56,13 +56,13 @@
 | 1 | All FRs mapped to ≥1 component | ✓ | Traceability Matrix (Lab 3.2) covers FR-01 through FR-17 |
 | 2 | All entities have a clear "owner" component | ✓ | User→Auth, Problem→ProblemSvc, Submission→JudgeSvc, Contest→ContestSvc |
 | 3 | API contracts consistent with ER Model | ✓ | Field names consistent; UUID types match. A few nullable fields are not clearly defined. |
-| 4 | Deployment Diagram covers all components | ✓ | App, JudgeWorker, PostgreSQL, Redis, RabbitMQ, MinIO, and Nginx are all present |
+| 4 | Deployment Diagram covers all components | ✓ | App, JudgeWorker, PostgreSQL, Redis, RabbitMQ, Object Storage (S3-compatible), and Nginx are all present |
 | 5 | No circular dependencies | ✓ | Lab 3.5 detected and resolved the UserService ↔ ContestService circular dependency |
 | 6 | Each component has Single Responsibility | ✓ | After Lab 3.5 refactoring, no God Classes remain |
 | 7 | Interfaces sufficient without knowing internals | ✓ | ISubmissionRepository, IJudgeRunner are well-defined |
 | 8 | ADRs document key decisions with trade-offs | ✗ | Only ADR-001 exists. Missing ADRs for DB selection, caching strategy, and sandbox choice |
 | 9 | No security anti-patterns | ✗ | Lab 3.5 Case 4 identified an SQL injection vulnerability in the draft — refactored. All API endpoints should be verified for auth checks. |
-| 10 | Design can scale to meet concurrent user NFR | ✓ | JudgeWorker scales horizontally. DB replication is proposed in Lab 3.4. |
+| 10 | Design can scale to meet concurrent user NFR | ✓ | JudgeWorker scales horizontally. DB replication is proposed in Lab 3.4. Design targets 1,000 concurrent users (PER-01). |
 | 11 | Pattern Application Map consistent with design | ✓ | All 6 patterns from Lab 3.5 correspond to actual design artifacts |
 | 12 | Pseudocode covers happy path + all error paths | ✓ | Lab 3.3 pseudocode covers CE, TLE, MLE, RE, WA, and AC |
 
@@ -75,12 +75,12 @@
 | **System Name / Version** | CODING WAR v0.1-beta — Design Review Report |
 | **Review Date** | \[Fill in date\] |
 | **Reviewer(s)** | \[Reviewing team\] |
-| **Executive Summary** | The CODING WAR design demonstrates a solid understanding of separation of concerns and dependency management. The selected patterns (Repository, Event-Driven, Dependency Injection) are well-suited to the requirements. The main weaknesses are a lack of ADRs for key architectural decisions (database, cache, sandbox) and an incomplete HA design in the Deployment Diagram. Verdict: APPROVED WITH CONDITIONS. |
-| **Quality Rubric Totals** | Maintainability: 12/16 · Testability: 11/16 · Scalability: 10/16 · Modularity: 9/12 · **Total: 42/60** |
+| **Executive Summary** | The CODING WAR design demonstrates a solid understanding of separation of concerns and dependency management. The selected patterns (Repository, Event-Driven, Dependency Injection) are well-suited to the requirements. The main weaknesses are a lack of ADRs for key architectural decisions (database, cache, sandbox) and an incomplete HA design in the Deployment Diagram. The design targets 1,000 concurrent users (PER-01) with judging response < 5s (PER-03). Verdict: APPROVED WITH CONDITIONS. |
+| **Quality Rubric Totals** | Maintainability: 12/16 · Testability: 11/16 · Scalability: 10/16 · Modularity: 8/12 · **Total: 41/60** |
 | **Critical Issues** | **CI-01:** Missing ADR for the database choice (PostgreSQL) and caching strategy. No justification for why MongoDB or MySQL was not selected. Affected: Architecture artifacts. **CI-02:** The beta Deployment Diagram does not show HA for PostgreSQL or RabbitMQ — deploying as-is would leave known SPOFs unresolved in production. |
 | **Major Issues** | **MA-01:** ScoreboardModule still handles reporting — extract a ReportingService before implementation begins. **MA-02:** EmailService has no interface abstraction — makes mocking in tests difficult. **MA-03:** Integration test strategy not designed (fixtures, test DB isolation). |
-| **Minor Issues** | **MI-01:** Some API error response schemas do not define a consistent error message format. **MI-02:** Logging strategy is absent from the design (centralized logging, correlation IDs). |
-| **Design Strengths** | (1) Event-driven architecture for judging — scalable and resilient. (2) Anti-pattern detection and refactoring in Lab 3.5 — team demonstrated self-review capability. (3) Complete Traceability Matrix — every FR is traced to a component. (4) `VerdictDeterminer` is a separate pure function class — easy to unit test in isolation. |
+| **Minor Issues** | **MI-01:** Some API error response schemas do not define a consistent error message format. **MI-02:** Admin audit logging is designed (admin_audit_logs table), but centralized logging strategy for the entire system is absent from the design (correlation IDs, log aggregation). |
+| **Design Strengths** | (1) Event-driven architecture for judging — scalable and resilient. (2) Anti-pattern detection and refactoring in Lab 3.5 — team demonstrated self-review capability. (3) Complete Traceability Matrix — every FR is traced to a component. (4) `VerdictDeterminer` is a separate pure function class — easy to unit test in isolation. (5) Design targets 1,000 concurrent users with < 5s judging response time. |
 | **Verdict** | ☑ **APPROVED WITH CONDITIONS** |
 | **Conditions for Approval** | (1) Add ADR-002 (Database Selection: PostgreSQL justification vs. alternatives) and ADR-003 (Caching Strategy: Redis patterns and rationale). (2) Update the Deployment Diagram to show: PostgreSQL Primary + Standby and RabbitMQ with ≥2 nodes. |
 

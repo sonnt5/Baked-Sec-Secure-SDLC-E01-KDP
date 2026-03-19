@@ -43,7 +43,7 @@
         ↓ HTTP
 [CODING WAR Application Server]
   ├── AuthModule          → [PostgreSQL: users, sessions]
-  ├── ProblemModule       → [PostgreSQL: problems, test_cases] + [MinIO: test case files]
+  ├── ProblemModule       → [PostgreSQL: problems, test_cases] + [S3-compatible Storage: test case files]
   ├── ContestModule       → [PostgreSQL: contests, registrations]
   ├── SubmissionModule    → [PostgreSQL: submissions] → [RabbitMQ: judge_queue]
   ├── ScoreboardModule    → [PostgreSQL: scores] + [Redis: scoreboard cache]
@@ -66,8 +66,8 @@
 | FR-12 | Submit a solution | | | | ✓ | |
 | FR-08 | Create / manage contests | | | ✓ | | |
 | FR-15 | View scoreboard | | | | | ✓ |
-| NFR-01 | 500 concurrent users | ✓ | ✓ | ✓ | ✓ | ✓ |
-| NFR-02 | Judging response ≤ 30s | | | | ✓ | |
+| NFR-01 | 1,000 concurrent users | ✓ | ✓ | ✓ | ✓ | ✓ |
+| NFR-02 | Judging response < 5s | | | | ✓ | |
 
 ---
 
@@ -77,12 +77,12 @@
 
 | Entity | Key Attributes | PK / FK | Data Constraints |
 |--------|---------------|---------|-----------------|
-| **User** | id, username, email, password_hash, role, is_verified, failed_login_attempts, locked_until, created_at | PK: id (UUID) | username UNIQUE NOT NULL 3–30 chars, alphanumeric; email UNIQUE NOT NULL valid format; role IN ('contestant', 'problem_setter', 'admin') |
+| **User** | id, username, email, password_hash, role, is_verified, failed_login_attempts, locked_until, created_at | PK: id (UUID) | username UNIQUE NOT NULL 3–30 chars, alphanumeric; email UNIQUE NOT NULL valid format; role IN ('contestant', 'admin') |
 | **Problem** | id, title, description, difficulty, time_limit_ms, memory_limit_mb, status, created_by, created_at | PK: id, FK: created_by → User | time_limit 100–10000ms; memory_limit 16–512MB; status IN ('draft', 'public'); difficulty IN ('easy', 'medium', 'hard') |
 | **Submission** | id, user_id, problem_id, contest_id, language, code, status, verdict, score, submitted_at | PK: id, FK: user_id → User, problem_id → Problem, contest_id → Contest (nullable) | language IN ('cpp', 'java', 'python'); verdict IN ('pending', 'AC', 'WA', 'TLE', 'MLE', 'CE', 'RE'); code NOT NULL max 65,535 chars |
 | **Contest** | id, title, start_time, end_time, freeze_time, type, status, created_by | PK: id, FK: created_by → User | type IN ('public', 'private'); start_time < end_time; freeze_time BETWEEN start_time AND end_time |
 | **ContestProblem** | contest_id, problem_id, order_index, point_value | PK: (contest_id, problem_id), FK: both → Contest and Problem | order_index ≥ 1; point_value > 0 |
-| **TestCase** | id, problem_id, input_storage_key, expected_output_storage_key, is_sample, order_index | PK: id, FK: problem_id → Problem | input/output stored in MinIO (S3-compatible), not in the DB directly; is_sample BOOLEAN |
+| **TestCase** | id, problem_id, input_storage_key, expected_output_storage_key, is_sample, order_index | PK: id, FK: problem_id → Problem | input/output stored in S3-compatible Storage, not in the DB directly; is_sample BOOLEAN |
 
 ### Step 3: Data Architecture Decisions
 
@@ -90,7 +90,7 @@
 
 **Q2 — Caching with Redis:** Cache: (1) Scoreboard per contest — read-heavy, acceptable stale (5–10s); strategy: write-through after each AC submission. (2) User session tokens — fast lookup, natural expiry via TTL. (3) Problem list — infrequently updated, cache for 60s with TTL-based expiry.
 
-**Q3 — Test case storage:** Test cases should not be stored in the database. Test case files can be very large (several MB per problem × thousands of problems). Databases are not optimized for storing large binary/text files. Use MinIO (S3-compatible object storage) to store the files; only store the `storage_key` reference in the DB.
+**Q3 — Test case storage:** Test cases should not be stored in the database. Test case files can be very large (several MB per problem × thousands of problems). Databases are not optimized for storing large binary/text files. Use S3-compatible object storage to store the files; only store the `storage_key` reference in the DB.
 
 **Q4 — Cascade on Submission deletion:** `RESTRICT` — do not allow a Submission to be deleted if related TestResult records exist. Submission data has forensic and audit value. If deletion is needed, use soft delete (add a `deleted_at` column) rather than hard delete.
 
