@@ -1,0 +1,97 @@
+# config/zap-config.yaml
+# Chapter 8 — OWASP ZAP API Scan Configuration
+#
+# Used in:
+#   Lab 8.6 (DAST): zap-api-scan.py -t http://staging:8000/openapi.json
+#                   -f openapi -c /zap/wrk/code/config/zap-config.yaml
+#
+# Run baseline scan (safe, no attack):
+#   docker run --rm -v $(pwd):/zap/wrk zaproxy/zap-stable \
+#     zap-api-scan.py \
+#     -t http://staging:8000/openapi.json \
+#     -f openapi \
+#     -c /zap/wrk/code/config/zap-config.yaml \
+#     -r /zap/wrk/zap-baseline-report.html
+#
+# Run active scan (staging ONLY — never production):
+#   Same command with -a flag added.
+#
+# WARNING: Active scan submits injection payloads and may create records.
+# Only run against staging with synthetic data. Reset DB after scan.
+
+# Alert thresholds for CI blocking
+# FAIL = exit code 1 (blocks CI)
+# WARN = exit code 2 (alerts without blocking)
+# INFO = exit code 0 (informational only)
+fail-on: CRITICAL HIGH
+warn-on: MEDIUM
+info-on:  LOW
+
+# Scan rules to enable — mapped to CODING WAR threat model
+rules:
+  # Authentication and session
+  - id: 10010   # Cookie no HttpOnly flag — ASVS V3.3.2
+    threshold: MEDIUM
+  - id: 10011   # Cookie without Secure flag — ASVS V3.3.1
+    threshold: MEDIUM
+  - id: 10015   # Incomplete or No Cache-control Header Set
+    threshold: LOW
+  - id: 10017   # Cross-Domain JavaScript Source File Inclusion
+    threshold: MEDIUM
+
+  # Browser security headers — ASVS V3.4 (Lab 7.4 controls)
+  - id: 10020   # X-Frame-Options header not set
+    threshold: MEDIUM
+  - id: 10021   # X-Content-Type-Options header not set
+    threshold: MEDIUM
+  - id: 10038   # Content Security Policy header not set
+    threshold: MEDIUM
+  - id: 10040   # Secure pages include mixed content
+    threshold: HIGH
+
+  # Injection — ASVS V1.2
+  - id: 40014   # Cross Site Scripting (Persistent) — TH-07 related
+    threshold: HIGH
+  - id: 40016   # Cross Site Scripting (Reflected)
+    threshold: HIGH
+  - id: 40018   # SQL Injection — TH-07, Lab 8.3 SF-001
+    threshold: HIGH
+  - id: 90019   # Server Side Code Injection
+    threshold: HIGH
+
+  # Information disclosure — Lab 8.3 SF-006 class
+  - id: 10024   # Information Disclosure - Sensitive Information in URL
+    threshold: MEDIUM
+  - id: 10025   # Information Disclosure - Sensitive Information in HTTP Referrer Header
+    threshold: MEDIUM
+
+# Paths included in active scan (CODING WAR authenticated endpoints)
+# Active scan submits attack payloads — limit to known-safe staging paths
+active-scan-paths:
+  - /api/v1/auth/login
+  - /api/v1/auth/register
+  - /api/v1/submissions
+  - /api/v1/problems
+  - /api/v1/contests
+
+# Paths excluded from active scan
+# Reason must be documented — suppression without reason is a gap
+exclude-paths:
+  # Admin endpoints — require MFA; automated scan cannot simulate MFA flow;
+  # covered by manual pentest in Lab 8.8 instead
+  - /admin/*
+  - /api/v1/admin/*
+
+  # Destructive operations — active scan may corrupt test data
+  # Reset staging DB after any active scan that touches these paths
+  - /api/v1/*/delete
+  - /api/v1/*/reset
+
+# Suppress specific alerts with justification
+# Suppressions without reason are treated as untriaged findings
+suppress:
+  # Rule 10016 (Web Browser XSS Protection header) is deprecated —
+  # CSP (rule 10038) covers this more effectively in modern browsers.
+  - id: 10016
+    reason: "Deprecated rule — superseded by CSP (10038). CODING WAR sets CSP via SecurityHeadersMiddleware."
+    authority: "Security Champion"

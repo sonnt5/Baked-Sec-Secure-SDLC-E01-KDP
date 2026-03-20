@@ -1,0 +1,127 @@
+# .github/workflows/dast.yml
+# Chapter 8, Lab 8.6: DAST in CI -- OWASP ZAP API Scan
+#
+# Two jobs:
+#   1. zap-baseline (nightly):  safe read-only scan -- no attack payloads
+#   2. zap-active   (weekly):   active scan with injection payloads -- staging ONLY
+#
+# Lab 8.6, Task 4 asks you to analyse:
+#   - Why authenticated scanning covers more of the threat model
+#   - What risks come from providing a JWT in the scan configuration
+#   - How staging isolation prevents active scan contaminating production
+#
+# WARNING: zap-active sends destructive payloads (injection, XSS, etc.)
+#   -- runs ONLY against staging, never production
+#   -- staging database must be reset after each active scan run
+#   -- STAGING_URL secret must never point to a production instance
+
+name: DAST Scan (ZAP)
+
+on:
+  schedule:
+    - cron: "0 3 * * *"    # Nightly baseline at 03:00 UTC
+    - cron: "0 4 * * 0"    # Weekly active scan Sunday at 04:00 UTC
+  workflow_dispatch:
+    inputs:
+      scan_type:
+        description: "Scan type"
+        required: true
+        default: "baseline"
+        type: choice
+        options: [baseline, active]
+
+jobs:
+
+  # ---------------------------------------------------------------------------
+  # Nightly baseline scan -- safe, passive rules only
+  # No attack payloads are sent. Safe to run against a live staging environment.
+  # Non-blocking: reports findings, does not fail the build.
+  # Requires staging to be running -- not available during PR builds.
+  # ---------------------------------------------------------------------------
+  zap-baseline:
+    name: ZAP Baseline Scan (Nightly)
+    runs-on: ubuntu-latest
+    if: |
+      (github.event_name == 'schedule' && github.event.schedule == '0 3 * * *') ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.scan_type == 'baseline')
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: ZAP baseline scan
+        run: |
+          docker run --rm \
+            -v ${{ github.workspace }}:/zap/wrk \
+            zaproxy/zap-stable \
+            zap-api-scan.py \
+            -t ${{ secrets.STAGING_URL }}/openapi.json \
+            -f openapi \
+            -c /zap/wrk/code/config/zap-config.yaml \
+            -r /zap/wrk/zap-baseline-report.html \
+            -w /zap/wrk/zap-warnings.md \
+            -I
+        # -I: do not fail on alerts (informational/reporting run)
+        continue-on-error: true
+
+      - name: Upload baseline report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zap-baseline-${{ github.sha }}
+          path: |
+            zap-baseline-report.html
+            zap-warnings.md
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  # Weekly active scan -- sends injection payloads, staging ONLY
+  # Non-blocking: findings reviewed by Security Champion before release.
+  # environment: staging enforces manual approval -- prevents accidental prod scan.
+  # ---------------------------------------------------------------------------
+  zap-active:
+    name: ZAP Active Scan (Weekly -- Staging Only)
+    runs-on: ubuntu-latest
+    if: |
+      (github.event_name == 'schedule' && github.event.schedule == '0 4 * * 0') ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.scan_type == 'active')
+    environment: staging   # requires manual approval -- do not remove
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Safety check -- verify target is not production
+        run: |
+          if echo "${{ secrets.STAGING_URL }}" | grep -qiE "prod|production|api\.coding-war\.com"; then
+            echo "ERROR: STAGING_URL appears to be production. Aborting."
+            exit 1
+          fi
+          echo "Target confirmed: ${{ secrets.STAGING_URL }}"
+
+      - name: ZAP active scan
+        run: |
+          docker run --rm \
+            -v ${{ github.workspace }}:/zap/wrk \
+            zaproxy/zap-stable \
+            zap-api-scan.py \
+            -t ${{ secrets.STAGING_URL }}/openapi.json \
+            -f openapi \
+            -c /zap/wrk/code/config/zap-config.yaml \
+            -a \
+            -r /zap/wrk/zap-active-report.html
+        continue-on-error: true
+
+      - name: Upload active scan report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zap-active-${{ github.sha }}
+          path: zap-active-report.html
+          retention-days: 90   # retain longer -- release gate evidence
+
+      - name: Reset staging database
+        # Purge test data created by injection payloads during active scan.
+        if: always()
+        run: |
+          curl -X POST ${{ secrets.STAGING_ADMIN_URL }}/internal/reset-test-data \
+            -H "Authorization: Bearer ${{ secrets.STAGING_RESET_TOKEN }}"
+        continue-on-error: true

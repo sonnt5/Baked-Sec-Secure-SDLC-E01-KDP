@@ -1,0 +1,123 @@
+# .github/workflows/iac-scan.yml
+# Chapter 8, Lab 8.5: IaC Security -- Trivy + Checkov
+#
+# Two jobs:
+#   1. trivy-iac (path-triggered + weekly): Trivy config scan on k8s/ + Dockerfile
+#   2. checkov   (path-triggered + weekly): Checkov on k8s/, Dockerfile, docker-compose
+#
+# Path triggers: run only when IaC files change (not on every Python commit).
+# Weekly nightly: catches new checks published after the last IaC file change.
+# Lab 8.5 Discussion Q2 asks why nightly-only would miss certain regressions.
+#
+# Lab 8.5, Task 4: this file is the reference implementation.
+# Attempt writing the steps block yourself before reading this.
+
+name: IaC Security Scan
+
+on:
+  push:
+    branches: [main, staging]
+    paths:
+      - "k8s/**"
+      - "Dockerfile"
+      - "docker-compose*.yml"
+      - ".github/workflows/iac-scan.yml"
+  pull_request:
+    paths:
+      - "k8s/**"
+      - "Dockerfile"
+      - "docker-compose*.yml"
+  schedule:
+    - cron: "0 2 * * 2"    # Weekly Tuesday at 02:00 UTC
+
+jobs:
+
+  # ---------------------------------------------------------------------------
+  # Trivy IaC scan -- Kubernetes manifests + Dockerfile + docker-compose
+  # Blocking on CRITICAL and HIGH misconfigurations (per trivy-config.yaml).
+  # ---------------------------------------------------------------------------
+  trivy-iac:
+    name: Trivy IaC Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Trivy
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Trivy -- scan all IaC files
+        run: |
+          trivy config \
+            --config code/config/trivy-config.yaml \
+            --format json \
+            -o trivy-iac-results.json \
+            k8s/ Dockerfile docker-compose.yml
+        continue-on-error: true
+
+      - name: Upload Trivy IaC results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-iac-${{ github.sha }}
+          path: trivy-iac-results.json
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  # Checkov scan -- comprehensive policy checks across all IaC types
+  # Blocking on CRITICAL and HIGH; MEDIUM is soft-fail (reported, not blocking).
+  # ---------------------------------------------------------------------------
+  checkov:
+    name: Checkov IaC Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Checkov
+        run: pip install checkov --break-system-packages
+
+      - name: Checkov -- Kubernetes manifests
+        run: |
+          checkov \
+            -d k8s/ \
+            --framework kubernetes \
+            --hard-fail-on CRITICAL,HIGH \
+            --soft-fail-on MEDIUM \
+            -o json \
+            --output-file checkov-k8s-results.json
+        continue-on-error: true
+
+      - name: Checkov -- Dockerfile
+        run: |
+          checkov \
+            -f Dockerfile \
+            --framework dockerfile \
+            --hard-fail-on CRITICAL,HIGH \
+            --soft-fail-on MEDIUM \
+            -o json \
+            --output-file checkov-dockerfile-results.json
+        continue-on-error: true
+
+      - name: Checkov -- docker-compose
+        run: |
+          checkov \
+            -f docker-compose.yml \
+            --framework docker_compose \
+            --hard-fail-on CRITICAL,HIGH \
+            -o json \
+            --output-file checkov-compose-results.json
+        continue-on-error: true
+
+      - name: Upload Checkov results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: checkov-${{ github.sha }}
+          path: |
+            checkov-k8s-results.json
+            checkov-dockerfile-results.json
+            checkov-compose-results.json
+          retention-days: 30

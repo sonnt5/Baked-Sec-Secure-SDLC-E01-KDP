@@ -1,0 +1,101 @@
+# .github/workflows/sast.yml
+# Chapter 8, Lab 8.3: SAST in CI — Semgrep + Bandit
+#
+# Two jobs:
+#   1. PR gate (semgrep-pr-check): diff scan on changed files only — fast, blocking
+#   2. Nightly full scan (sast-nightly): whole repo — slower, alerting only
+#
+# Lab 8.3, Task 4 asks you to analyse the trade-offs between these two approaches.
+
+name: SAST Scan
+
+on:
+  pull_request:
+  push:
+    branches: [main, staging]
+  schedule:
+    - cron: "0 2 * * *"   # Nightly at 02:00 UTC
+
+jobs:
+
+  # ---------------------------------------------------------------------------
+  # PR gate: diff scan — only files changed in the PR
+  # Blocks merge on CRITICAL or HIGH findings.
+  # Fast: < 30s on typical PRs.
+  # ---------------------------------------------------------------------------
+  semgrep-pr-check:
+    name: Semgrep SAST (PR diff scan)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: returntocorp/semgrep-action@v1
+        with:
+          config: >-
+            p/python
+            p/fastapi
+            p/owasp-top-ten
+            code/semgrep-rules/custom-coding-war.yml
+          generateSarif: "1"
+          # auditOn: push — use 'push' to enable full scan on merge to main
+        env:
+          SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+
+      - name: Upload SARIF to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()   # Upload even if scan found no findings
+        with:
+          sarif_file: semgrep.sarif
+
+  # ---------------------------------------------------------------------------
+  # Nightly full scan: entire repo, Semgrep + Bandit
+  # Non-blocking (continue-on-error: true) but reports to artifacts.
+  # Catches findings in files never changed by any PR.
+  # ---------------------------------------------------------------------------
+  sast-nightly:
+    name: Full SAST Scan (Nightly)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'push'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          pip install semgrep bandit --break-system-packages
+
+      - name: Semgrep full scan
+        run: |
+          semgrep scan \
+            --config p/python \
+            --config p/fastapi \
+            --config p/owasp-top-ten \
+            --config code/semgrep-rules/ \
+            --json -o semgrep-full-results.json \
+            --severity WARNING \
+            --error \
+            app/
+        # --error: exit code 1 on any finding (makes job status = failure)
+        # continue-on-error: true below ensures this doesn't block the branch
+        continue-on-error: true
+
+      - name: Bandit scan
+        run: |
+          bandit -r app/ \
+            -l \
+            -f json \
+            -o bandit-results.json \
+            --skip B101
+        continue-on-error: true
+
+      - name: Upload scan artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sast-nightly-${{ github.sha }}
+          path: |
+            semgrep-full-results.json
+            bandit-results.json
+          retention-days: 30
