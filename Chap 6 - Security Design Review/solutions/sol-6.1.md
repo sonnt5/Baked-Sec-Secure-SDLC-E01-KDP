@@ -24,8 +24,8 @@
 
 | Element | Content |
 |---------|---------|
-| **Claim** | CODING WAR prevents automated credential stuffing: an attacker using a botnet of up to 10,000 IPs cannot exceed 10 password attempts per user account per hour without triggering lockout. |
-| **Argument** | Three independent controls: (1) Rate limiting at API Gateway: max 10 req/min/IP via Redis sliding window. (2) Account lockout: 5 consecutive failures per email/10min → 15min lock. (3) Uniform error response: identical message and timing for valid/invalid credentials — prevents user enumeration. Patterns: Defense in Depth (three independent layers), Fail Securely (lockout as safe default), Least Information (no credential existence disclosure). |
+| **Claim** | CODING WAR prevents automated credential stuffing: an attacker using a botnet of up to 10,000 IPs cannot exceed 30 password attempts per user account per hour without triggering lockout. |
+| **Argument** | Three independent controls: (1) Rate limiting at API Gateway: max 10 req/min/IP via Redis sliding window (per SDD 3.3: 1 req/10s baseline, adjusted for security). (2) Account lockout: 5 consecutive failures per email/10min → 15min lock. (3) Uniform error response: identical message and timing for valid/invalid credentials — prevents user enumeration. Patterns: Defense in Depth (three independent layers), Fail Securely (lockout as safe default), Least Information (no credential existence disclosure). |
 | **Evidence** | ① `tests/security/test_rate_limiting.py::test_login_rate_limit_returns_429_after_10_rpm` ② `tests/security/test_account_lockout.py::test_locked_after_5_failures` ③ `tests/security/test_account_lockout.py::test_lockout_resets_after_15min` ④ `tests/security/test_user_enumeration.py::test_response_identical_valid_invalid_user` ⑤ Prometheus alert rule: `login_failures_total > 50 in 5m` |
 
 ### CAE-02: IDOR Prevention
@@ -41,7 +41,7 @@
 | Element | Content |
 |---------|---------|
 | **Claim** | Code submitted by contestants cannot read test case files, access other contestants' data, make outbound network calls, or persist state outside the /tmp directory during execution. |
-| **Argument** | gVisor (runsc) runtime blocks all syscalls not on the approved list via seccomp profile — prevents direct filesystem access outside sandbox. Network namespace isolation: judge container has no internet route — outbound blocked by default deny. Resource limits: CPU=1 core, memory=256MB, wall time=30s, SIGKILL on exceed. Filesystem: read-only except /tmp. Pattern: Defense in Depth (4 independent isolation layers), Least Privilege (judge runs as uid 65534). |
+| **Argument** | gVisor (runsc) runtime blocks all syscalls not on the approved list via seccomp profile — prevents direct filesystem access outside sandbox. Network namespace isolation (network_mode: none per SDD 3.2.2): judge container has no internet route — outbound blocked by default deny. Resource limits: CPU=1 core, memory=256MB, wall time=30s, SIGKILL on exceed (Cgroups v2 per SDD 5.1). Filesystem: read-only except /tmp. Pattern: Defense in Depth (4 independent isolation layers), Least Privilege (judge runs as uid 10001 per SDD 7.1). |
 | **Evidence** | ① `tests/judge/test_sandbox.py::test_outbound_network_blocked_from_judge_container` ② `tests/judge/test_sandbox.py::test_file_outside_tmp_cannot_be_written` ③ `tests/judge/test_resource_limits.py::test_infinite_loop_killed_within_30s` ④ `tests/judge/test_sandbox.py::test_fork_bomb_blocked_by_seccomp` ⑤ CIS Docker Benchmark report for judge container (Assumption ASS-03 verification) |
 
 ---
@@ -51,7 +51,7 @@
 | # | Assumption | Verification Method | Fallback if Wrong | Owner | Metric | Status |
 |---|-----------|--------------------|--------------------|-------|--------|--------|
 | **4** | PostgreSQL is only accessible from the app server — no direct internet access to port 5432 | Firewall rule audit; `nmap` scan from external IP; `pg_hba.conf` review | Immediately block port 5432; rotate DB credentials; audit recent connections | DevOps | 0 connections from non-app-server IPs in `pg_log` | Unverified |
-| **5** | Third-party CDN dependencies serve the exact expected files and have not been compromised | SRI hash verification; automated SCA scan weekly; content hash monitoring | Self-host critical scripts; block third-party scripts via CSP; incident response | Frontend + Security | SRI hash matches for all scripts; 0 CSP violations | Unverified |
+| **5** | All critical scripts are self-hosted at static.coding-war.io and verified with SRI (Subresource Integrity) during build — no third-party CDN dependencies for security-critical components | SRI hash verification; automated SCA scan weekly; content hash monitoring; CSP script-src 'self' enforcement | Block any third-party scripts via CSP; incident response if unexpected script detected | Frontend + Security | SRI hash matches for all scripts; 0 CSP violations; all scripts served from static.coding-war.io | Unverified |
 | **6** | All admin accounts are protected with MFA — no admin uses password-only auth | Admin account audit; verify MFA enforcement in auth settings; test login without MFA token fails | Force MFA enrollment; temporarily disable MFA-less admin accounts | Security + Auth Team | 0 admin accounts with `mfa_enabled = false` | Unverified |
 
 **Question 4:** Assumption #3 (gVisor sandbox isolation) — if wrong, a contestant could execute arbitrary commands on the judge server, read all test cases, access DB credentials, and pivot to the app server. Unlike a misconfigured firewall, a sandbox escape during a live contest could compromise the entire system before detection.

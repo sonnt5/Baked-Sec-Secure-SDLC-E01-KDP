@@ -1,56 +1,44 @@
-# Solution 7.1 — Design Invariants & Code Contracts
+# Solution 7.1 — Design Invariants → Code Contracts
 
-> [!NOTE]
-> **Reference Solution** — Work through the lab independently before reading this. The approach shown here is one valid path. Your solution may differ and still be more appropriate for your context.
-
----
-
-## Key Insights
-
-### What distinguishes a contract from an assumption
-
-An assumption says *what should be true*. A contract says *what must be true*, names the specific file or mechanism that enforces it, and provides a detection method a second engineer can run without asking the original author.
-
-The most common failure pattern: teams write "all input must be validated" in their SDR and then have no SAST rule, no test, and no checklist item that would catch a handler that skips validation. The assumption never becomes a contract.
-
-### Trust boundary map — what is often missed
-
-- The judge result returned from a sandbox process is **untrusted** — it travels through a queue and could be tampered with before the application reads it. This is a common blind spot.
-- Admin-authored content (problem statements, test cases) is **low-trust**, not trusted. An admin account may be compromised.
-- Database read-back is not automatically trusted — if an attacker has written to the database (via a different exploit), reading that data back and rendering it without encoding creates a second-order XSS.
-
-### High-value assets — beyond the obvious
-
-Teams typically list: user credentials, JWT signing key. What is often missed:
-- **Test case input/output files** — their secrecy is what makes a contest meaningful. Exposure is irreversible.
-- **Verdict records** — if these can be modified, contest integrity fails silently.
-- **The judge execution environment** — compromise here means arbitrary code execution on the host.
-
-### Vulnerability chains — why combined severity exceeds individual steps
-
-A chain's severity is set by the asset at the end, not the average of the steps. If the final step reaches `admin access + no MFA + scoreboard manipulation`, that is Critical even if the first step (user enumeration) is Low. The chain multiplies exploitability across steps, not just adds them.
-
-**Common chains in CODING WAR:**
-1. Verbose login error → email enumeration → targeted credential stuffing → account takeover
-2. IDOR on submissions → read competing code → contestant strategy exposure (competition integrity)
-3. Nested quantifier in regex → crafted judge output → judge worker DoS → contest availability failure
-
-### What the Code Contract Document enables
-
-The primary value is not preventing bugs — it is ensuring that a new engineer knows what constraints exist *before* they write their first line of code, not after a security review finds a violation.
-
-A contract document also makes code reviews faster: instead of "is this safe?", reviewers ask "does this violate CI-03?" — which is a yes/no question with a specific answer.
+> [!WARNING]
+> **Reference Solution** — Complete the lab on your own before consulting this.
 
 ---
 
-## Reference Contract Examples
+## Task 2 — CI-08 (Team entry example)
 
-| Contract | Enforcement Location | Detection |
-|----------|---------------------|-----------|
-| All DB access via repository layer | `app/repositories/*.py` only | SAST rule `ci01.direct-db-in-handler`; test asserts no `db.execute()` import in `app/api/` |
-| `language` field validated against allowlist | `app/schemas/submission.py` — `Literal['python','cpp','java']` | `test_invalid_language_returns_422`; Pydantic rejects at parse time |
-| MFA required on all `/admin` endpoints | `@require_admin_mfa` Depends() in `app/api/admin/*.py` | `grep -r "@router\." app/api/admin/ | grep -v require_admin_mfa` |
-| No PII in application logs | `LoggingMiddleware.REDACT_FIELDS` | Unit test: trigger login failure, assert log entry has no `email` or `password` field |
+| ID | Design Assumption | Code Invariant | Enforcement Location | Violation Detection | Priority / ASVS |
+|----|------------------|----------------|---------------------|--------------------|--------------------|
+| **CI-08** | Password reset tokens are single-use and expire after 15 minutes | `PasswordResetRepository.consume_token()` marks tokens as `used=True` atomically; reuse returns `None`; tokens older than 900s are rejected regardless | `app/repositories/password_reset_repo.py`: `consume_token()` uses atomic `UPDATE ... WHERE used=False AND created_at > now()-900s RETURNING id` | Unit test: `test_reset_token_cannot_be_used_twice`; unit test: `test_reset_token_expired_after_15min` | High / ASVS V7.4 |
+
+---
+
+## Task 3 — VC-03 (Team chain example: Self-hosted script compromise → admin credential theft)
+
+| Step | Bug | Severity (isolated) | Asset | Chain |
+|------|-----|--------------------|----|------|
+| 1 | Syntax highlighter JS self-hosted at static.coding-war.io without SRI hash (per SDD Assumption 5: self-hosted with SRI) | Low | Frontend security | → Enables 2 |
+| 2 | If static server compromised; attacker injects keylogger into `syntax-highlighter.min.js` | High | Admin browser session | → Enables 3 |
+| 3 | Admin logs in; keylogger captures username + password + MFA token within 30s TOTP window | High | Admin credentials | → Enables 4 |
+| 4 | Attacker uses credentials within TOTP window → full admin access → manipulate verdicts, export all data | **Critical** | All HVAs | ⚠️ Final impact |
+
+**Fix:** SRI hash on all scripts (self-hosted at static.coding-war.io per SDD). CSP `script-src 'self'` blocks unapproved scripts. ASVS V3.6.1.
+
+---
+
+## Discussion Answers
+
+**Q1:** A test proves current behavior once; a code invariant prevents future violations. If CI-04 only exists as a test for `sandbox_runner.py`, a developer can add `admin_debug.py` with `subprocess.run(shell=True)` and the test still passes. The SAST rule catches the violation in `admin_debug.py` immediately on every future PR. Without the enforcement location, the invariant has no force beyond the moment it was written.
+
+**Q2:** Chain severity exceeds individual severity because the chain eliminates compensating controls. IDOR (High) alone is partially mitigated by opaque IDs making enumeration hard. Add missing audit log (High) and the attacker has no forensic risk. Add CI-03 violation (no MFA for admin) and the attacker escalates from read-only data theft to full verdict manipulation — a capability no individual bug provides.
+
+**Q3:** The Code Contract Document serves as institutional memory. A new developer consulting it during PR review immediately sees CI-03 with its enforcement mechanism (`@require_admin_mfa` decorator) and violation detection (checklist + unit test) — without needing to read the full SDR report. Without the document, invariants live only in the heads of the original team and vanish when people leave.
+
+---
+
+## Code References
+
+Lab 7.1 does not use dedicated code files — the Code Contract Document and Vulnerability Chain Analysis are text artifacts. The SAST rules that enforce CI-01–CI-06 live in [`code/semgrep-rules/coding-war-custom.yaml`](../code/semgrep-rules/coding-war-custom.yaml).
 
 ---
 

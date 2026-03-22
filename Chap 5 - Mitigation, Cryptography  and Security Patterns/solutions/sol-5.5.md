@@ -11,17 +11,31 @@
 ### CM-01: Password Hashing — Fixed
 
 ```python
-import bcrypt
+from argon2 import PasswordHasher
+from argon2.exceptions import VerifyMismatchError
+
+# Per SDD 3.1: Argon2id with 64MB, time_cost=4, parallelism=2
+ph = PasswordHasher(
+    memory_cost=65536,      # 64MB
+    time_cost=4,            # iterations
+    parallelism=2,          # threads
+    hash_len=32,
+    salt_len=16
+)
 
 def store_password(password: str) -> str:
-    # bcrypt: slow by design, includes built-in salt, work factor adjustable
-    return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt(rounds=12)).decode('utf-8')
+    # Argon2id: memory-hard, includes built-in salt, OWASP recommended
+    return ph.hash(password)
 
 def verify_password(password: str, hashed: str) -> bool:
-    return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
+    try:
+        ph.verify(hashed, password)
+        return True
+    except VerifyMismatchError:
+        return False
 ```
 
-**Why SHA-256 is dangerous:** A modern GPU can compute 10 billion SHA-256 hashes per second. A 10-character alphanumeric password (62^10 ≈ 8×10^17 combinations) would take ~10 years on SHA-256... but rainbow tables and dictionary attacks reduce this dramatically. bcrypt with rounds=12 takes ~250ms per hash — making GPU attacks ~40 million times slower.
+**Why SHA-256 is dangerous:** A modern GPU can compute 10 billion SHA-256 hashes per second. A 10-character alphanumeric password (62^10 ≈ 8×10^17 combinations) would take ~10 years on SHA-256... but rainbow tables and dictionary attacks reduce this dramatically. Argon2id with 64MB memory requirement makes GPU attacks economically infeasible — GPU attacks are memory-bandwidth bound, not computation bound.
 
 ### CM-02: AES Encryption Mode — Fixed
 
@@ -64,17 +78,20 @@ def generate_reset_token() -> tuple[str, str]:
 from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
-    JWT_SECRET: str                    # Required — no default, must come from environment
-    JWT_ALGORITHM: str = 'ES256'       # Asymmetric: no shared secret needed
+    JWT_PRIVATE_KEY: str               # Required — RSA private key from environment
+    JWT_PUBLIC_KEY: str                # RSA public key for verification
+    JWT_ALGORITHM: str = 'RS256'       # Asymmetric per SDD 3.1
 
     class Config:
         env_file = '.env'
 
-# In production: JWT_SECRET set from Vault/AWS Secrets Manager via CI/CD
-# Generate once: python -c "import secrets; print(secrets.token_hex(32))"
+# In production: Keys stored in Vault/AWS Secrets Manager via CI/CD
+# Generate once: 
+# openssl genrsa -out private.pem 4096
+# openssl rsa -in private.pem -pubout -out public.pem
 ```
 
-**Why hardcoded secret is dangerous:** The secret is in version control. Anyone with repo access (current or historical) can forge JWT tokens with any payload — including admin role. Rotation requires code change and redeployment. Secret scanning tools will flag it. In the case of asymmetric (ES256), there's no shared secret to leak — the private key stays in KMS.
+**Why hardcoded secret is dangerous:** The secret is in version control. Anyone with repo access (current or historical) can forge JWT tokens with any payload — including admin role. Rotation requires code change and redeployment. Secret scanning tools will flag it. With RS256 (per SDD 3.1), the private key stays in KMS — only AuthService can sign, while all services verify using the public key.
 
 ### CM-05: Webhook Signature Verification — Fixed
 
@@ -120,10 +137,10 @@ def encrypt_submission(code: str, key: bytes) -> tuple[bytes, bytes]:
 
 | Field | Content |
 |-------|---------|
-| **Decision** | **Argon2id** with `memory_cost=65536` (64MB), `time_cost=3`, `parallelism=4` |
-| **Rationale** | Argon2id won the Password Hashing Competition (2015) and is the OWASP-recommended choice. The memory-hard property (64MB required per hash attempt) makes GPU/ASIC attacks impractical — GPU attacks are memory-bandwidth bound, not computation bound. bcrypt (option A) is also acceptable but does not have memory-hardness — only time-hardness. |
+| **Decision** | **Argon2id** with `memory_cost=65536` (64MB), `time_cost=4`, `parallelism=2` (per SDD 3.1) |
+| **Rationale** | Argon2id won the Password Hashing Competition (2015) and is the OWASP-recommended choice. The memory-hard property (64MB required per hash attempt) makes GPU/ASIC attacks impractical — GPU attacks are memory-bandwidth bound, not computation bound. bcrypt (option A) is also acceptable but does not have memory-hardness — only time-hardness. Parameters aligned with SDD 3.1 specification. |
 | **Consequences (+)** | GPU-cracking is economically infeasible. Memory-hard means even a purpose-built ASIC has to dedicate significant memory per hash. OWASP-endorsed. |
-| **Consequences (−)** | 64MB × parallelism per login attempt — with 500 concurrent logins, peak memory: 500 × 64MB × 4 = 128GB. Must tune parameters for available hardware. Requires `argon2-cffi` library. |
+| **Consequences (−)** | 64MB × parallelism per login attempt — with 1,000 concurrent logins (per PER-01), peak memory: 1,000 × 64MB × 2 = 128GB. Must tune parameters for available hardware. Requires `argon2-cffi` library. |
 | **Options NOT chosen** | bcrypt: good but not memory-hard; SHA-256: fast — GPU-crackable in seconds. |
 | **Evidence** | `tests/test_password.py::test_argon2_hash_takes_acceptable_time` (target: 300–800ms); `tests/test_password.py::test_argon2_verify_correct_password_returns_true` |
 | **Review trigger** | When Argon2id is found vulnerable; when server hardware changes significantly (tune parameters); when OWASP changes recommendation |
@@ -132,23 +149,23 @@ def encrypt_submission(code: str, key: bytes) -> tuple[bytes, bytes]:
 
 | Field | Content |
 |-------|---------|
-| **Decision** | **Application-level AES-256-GCM with Envelope Encryption (KMS)** |
-| **Rationale** | TDE (option A) protects against physical disk theft but not against application-level SQL injection that reads plaintext data in memory. Application-level encryption means even a DB admin cannot read source code without KMS access — stronger isolation. No encryption (option C) relies entirely on access control — acceptable for low-sensitivity data but source code (intellectual property) warrants encryption at rest per threat model. |
-| **Consequences (+)** | Two-key defense: attacker needs both ciphertext (DB) AND KMS access to decrypt. Compliance-friendly. Audit trail via KMS access logs. |
-| **Consequences (−)** | Performance overhead: KMS unwrap call per submission read (~5ms latency). Operational complexity: KMS dependency, key rotation procedures. Needs InMemoryKMSStub for testing. |
-| **Options NOT chosen** | TDE: insufficient against application-layer attacks. No encryption: violates data classification policy for IP. |
-| **Evidence** | `tests/test_encryption.py::test_roundtrip_encrypt_decrypt`, `tests/test_encryption.py::test_tampered_ciphertext_raises_invalid_tag` |
+| **Decision** | **Application-level AES-256-GCM with Envelope Encryption (KMS) + TDE (Transparent Data Encryption) for PostgreSQL Volume (per SDD 7.2)** |
+| **Rationale** | Defense in depth: Application-level encryption protects against SQL injection that reads plaintext data in memory — even a DB admin cannot read source code without KMS access. TDE (per SDD 7.2) provides additional protection against physical disk theft and unauthorized volume access. Together, they provide two-layer defense: attacker needs both application-level KMS access AND physical/volume access to decrypt. No encryption (option C) relies entirely on access control — insufficient for source code (intellectual property) per threat model. |
+| **Consequences (+)** | Three-key defense: attacker needs ciphertext (DB) AND KMS access (application layer) AND volume encryption key (TDE layer). Compliance-friendly. Audit trail via KMS access logs. Physical disk theft protection via TDE. |
+| **Consequences (−)** | Performance overhead: KMS unwrap call per submission read (~5ms latency) + TDE I/O overhead (~5-10%). Operational complexity: KMS dependency, key rotation procedures, TDE key management. Needs InMemoryKMSStub for testing. |
+| **Options NOT chosen** | TDE only: insufficient against application-layer SQL injection. Application-level only: insufficient against physical disk theft. No encryption: violates data classification policy for IP. |
+| **Evidence** | `tests/test_encryption.py::test_roundtrip_encrypt_decrypt`, `tests/test_encryption.py::test_tampered_ciphertext_raises_invalid_tag`, Infrastructure: TDE enabled on PostgreSQL volume per SDD 7.2 |
 
 ### CDR-003: JWT Signing Algorithm
 
 | Field | Content |
 |-------|---------|
-| **Decision** | **ES256 (ECDSA P-256)** |
-| **Rationale** | HS256 (option A) requires sharing the signing secret with every service that verifies tokens — in a multi-service architecture, secret distribution and rotation is complex and risky. If any service is compromised, the shared secret allows forging tokens. ES256 uses asymmetric cryptography: the private key stays in KMS (only AuthService can sign), while all services verify using the public key (available from JWKS endpoint). RS256 (option B) is also valid but ECDSA P-256 produces shorter signatures (~72 bytes vs ~256 bytes for RSA-2048) with equivalent security. |
-| **Consequences (+)** | Private key never leaves KMS. Any service can verify without needing signing capability. Key rotation only affects AuthService. JWKS endpoint enables automatic public key distribution. |
-| **Consequences (−)** | External KMS dependency for every token issuance (~2ms). Slightly more complex key management than HS256. Services must fetch and cache JWKS. |
-| **Options NOT chosen** | HS256: shared secret risk in multi-service setup. RS256: equivalent security, larger signatures, older algorithm. |
-| **Evidence** | `tests/test_jwt.py::test_es256_token_verified_with_public_key_only`, `tests/test_jwt.py::test_algorithm_none_rejected` |
+| **Decision** | **RS256 (RSA-2048 or RSA-4096)** per SDD 3.1 |
+| **Rationale** | HS256 (option A) requires sharing the signing secret with every service that verifies tokens — in a multi-service architecture, secret distribution and rotation is complex and risky. If any service is compromised, the shared secret allows forging tokens. RS256 uses asymmetric cryptography: the private key stays in KMS (only AuthService can sign), while all services verify using the public key (available from JWKS endpoint). ES256 (ECDSA P-256) produces shorter signatures but RS256 is more widely supported and specified in SDD 3.1. |
+| **Consequences (+)** | Private key never leaves KMS. Any service can verify without needing signing capability. Key rotation only affects AuthService. JWKS endpoint enables automatic public key distribution. Industry-standard algorithm with broad library support. |
+| **Consequences (−)** | External KMS dependency for every token issuance (~2ms). Larger signatures (~256 bytes for RSA-2048) compared to ES256 (~72 bytes). Services must fetch and cache JWKS. |
+| **Options NOT chosen** | HS256: shared secret risk in multi-service setup. ES256: shorter signatures but not specified in SDD 3.1; RS256 chosen for consistency with design. |
+| **Evidence** | `tests/test_jwt.py::test_rs256_token_verified_with_public_key_only`, `tests/test_jwt.py::test_algorithm_none_rejected`, `tests/test_jwt.py::test_hs256_rejected` |
 
 ---
 

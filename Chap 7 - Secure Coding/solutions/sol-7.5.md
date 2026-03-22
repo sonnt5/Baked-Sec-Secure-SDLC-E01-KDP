@@ -1,52 +1,20 @@
 # Solution 7.5 — Error Handling, Logging & Dependency Management
 
-> [!NOTE]
-> **Reference Solution** — Work through the lab independently before reading this. Your approach may differ and still be correct.
+> [!WARNING]
+> **Reference Solution** — Complete the lab on your own before consulting this.
 
 ---
 
-## Key Insights
+## Key Answers
 
-### The two bugs in `error_handlers.py`
+**Why user-not-found and wrong-password return the same `AUTH_INVALID`:**
+Returning different messages allows an attacker to enumerate valid email addresses by testing which emails return "user not found" vs "wrong password." With a list of valid emails, credential stuffing becomes dramatically more efficient. The timing requirement: the response time must also be constant — if the "user not found" path returns in 1ms (no DB lookup) and "wrong password" returns in 300ms (Argon2id verification with 64MB memory per SDD 3.1), an attacker can still enumerate users by measuring latency. Fix: always run the Argon2id verification even for non-existent users (against a dummy hash) to normalize timing.
 
-**Bug 1 — Stack trace in HTTP response:** The traceback, exception message, and request URL are all returned to the client. A traceback reveals: server file paths, library versions (helping identify exploitable CVEs), database schema (from SQLAlchemy error messages), and the exact code path that failed. An attacker who can trigger exceptions reliably has a low-cost reconnaissance tool.
+**Passlib EOL significance:**
+`passlib` 1.7.4 was last updated in 2022 and the project is effectively unmaintained. There are no security patches for any future CVEs discovered in `passlib` itself. The correct migration path is to `argon2-cffi` directly — it provides the same Argon2id algorithm with an actively maintained codebase. Migration: replace `passlib.hash.argon2.hash(password)` with `argon2.PasswordHasher(memory_cost=65536, time_cost=4, parallelism=2).hash(password)` (64MB memory per SDD 3.1) and `passlib.hash.argon2.verify(password, hash)` with `argon2.PasswordHasher().verify(hash, password)`. Backwards-compatible: existing hashes from `passlib` can be verified by `argon2-cffi` since they use the same PHC string format.
 
-**Bug 2 — User enumeration via login error differentiation:** Returning `USER_NOT_FOUND` for missing users and `WRONG_PASSWORD` for existing users with wrong passwords allows an attacker to build a list of valid email addresses by trying many emails and noting which error code is returned. This list is then used for targeted credential stuffing — far more efficient than untargeted attempts.
-
-### The correlation ID pattern
-
-The core design: generate a short random reference (8 hex characters is sufficient — that is 4 billion possibilities, enough to correlate without revealing anything). Include it in:
-- The internal log at `ERROR` level — with the full exception type, request path, and request ID
-- The client response — as the only connection between "something went wrong" and the log entry
-
-Never include the exception message, exception type, or any path in the client response. The full traceback goes to `logger.debug(..., exc_info=True)` only — an internal-only level that is disabled in production log aggregators.
-
-### Login enumeration — timing side channel
-
-Even if the response bodies are identical, a difference in response time can reveal whether a user exists. Looking up a non-existent user returns quickly (no bcrypt/Argon2 needed); looking up an existing user with the wrong password requires running the hash comparison (100+ ms with proper Argon2 parameters).
-
-The fix: always run the password hash comparison, even when the user does not exist. Use a dummy hash for the non-existent-user path:
-
-```python
-hash_to_check = user.hashed_password if user else DUMMY_HASH
-verify_password(password, hash_to_check)  # always runs
-```
-
-### Log schema — what "never log" means
-
-The phrase "never log" means regardless of log level, regardless of debug mode, regardless of circumstances. The fields that must never appear in logs:
-- **Raw passwords** — even failed login attempts; the attacker-supplied value is useless for investigation but catastrophic if the log is breached
-- **Raw IP addresses** — PII in many jurisdictions; use a salted hash (SHA-256[:12]) for correlation without retention of personal data
-- **Full JWT tokens** — a stolen log file becomes a session hijack source
-- **Contestant source code** — potentially copyrighted; definitely private
-
-Fields that should be **hashed for correlation without identification**: IP address, user agent (use a class: `browser/mobile/cli/bot`).
-
-### Dependency audit — key findings
-
-`passlib[argon2]` 1.7.4 — last release 2022. The library has no active maintainer. There are no known CVEs, but an unmaintained library will not receive patches for future vulnerabilities. **Recommended action:** migrate to `argon2-cffi` directly, which is actively maintained. This sprint if possible; next sprint at latest.
-
-`python-jose[cryptography]` 3.3.0 — CVE-2024-33663 is a conditional True Positive. If the application calls `jwt.decode()` without the `algorithms` parameter, the `alg=none` bypass applies. If `algorithms=['ES256']` is always specified explicitly, the vulnerability is not exploitable. **Required action:** audit all `jwt.decode()` call sites before closing.
+**python-jose CVE assessment logic:**
+The CVE requires that `jwt.decode()` be called without explicitly specifying `algorithms=['RS256']` (per SDD 3.1). The correct triage step is: audit every call to `jose.jwt.decode()` in `app/core/security.py`. If all calls have `algorithms=['RS256']` and explicitly reject 'none', the CVE is not exploitable in this codebase — document it as "mitigated by explicit algorithm specification" and close as acceptable risk. If any call is missing the `algorithms` parameter: fix immediately. The SAST rule `coding-war.ci01.raw-sql-execute` (adapted for JWT) should catch future missing-algorithm calls.
 
 ---
 
