@@ -1,59 +1,46 @@
-# Solution 7.2 — Integer Precision, Race Conditions & TOCTOU
+# Solution 7.2 — Low-Level Flaws: Integer, Memory, TOCTOU
 
-> [!NOTE]
-> **Reference Solution** — Work through the lab independently before reading this. The approach shown here is one valid path. Your solution may differ and still be correct.
-
----
-
-## Key Insights
-
-### Why `float` is wrong for scoring — not just imprecise
-
-Python's `float` uses IEEE 754 binary floating point. The value `20.0` cannot be represented exactly in binary. Over many operations or with certain fractional penalties, the accumulated error changes the result of `int()` truncation — one contestant scores 939 where the correct answer is 940. In a contest context, this is not a rounding error — it is a fairness failure.
-
-Using `Decimal` with explicit `ROUND_HALF_UP` eliminates both problems: exact representation and symmetric rounding. The type annotation (`Decimal` rather than `float`) makes the intent visible in the API.
-
-### Why `asyncio.Lock()` does not fix the Redis race condition
-
-`asyncio.Lock()` serialises access within a single Python process. In a production deployment, multiple worker processes handle concurrent requests. Two requests arriving at the same time will be handled by different processes — each holding its own lock, neither aware of the other.
-
-The correct fix runs the check-and-increment atomically inside Redis using a Lua script. Redis is single-threaded for script execution — no interleaving is possible. This is the same guarantee `MULTI/EXEC` provides, but Lua scripts are preferred for check-and-modify patterns because they run as a single operation.
-
-### Why `is_within_time_limit` missing a lower bound is a security issue
-
-If `execution_ms` comes from a judge result JSON (an untrusted source), a value of `-1` always passes the time check — every submission appears to run instantly. This matters if an attacker can influence the judge result (e.g., by compromising a worker or replaying a crafted message). The validation is a trust boundary check, not just defensive programming.
-
-### The TOCTOU gap explained
-
-```
-Thread A (attacker)                 Thread B (application)
-                                    T1: os.path.exists("/tmp/sub_X") → False
-create symlink: /tmp/sub_X → /etc/passwd
-                                    T2: open("/tmp/sub_X", "wb") → writes to /etc/passwd
-```
-
-The gap between T1 and T2 is real — even on a single-core system, the OS can schedule a context switch between the two operations. The fix is to use `tempfile.NamedTemporaryFile()`, which calls `open()` with `O_CREAT | O_EXCL` internally — a single atomic OS call that both creates and opens the file, with no window for interference.
-
-Using `/var/submissions/tmp/` instead of `/tmp/` eliminates the sticky-bit attack: on `/tmp`, any user can create files and race against the application. A dedicated directory with restricted permissions closes this path entirely.
-
-### ASVS V15.4 — honest assessment
-
-| Control | Status | Note |
-|---------|--------|------|
-| 15.4.1 | Pass (after fix) | Redis Lua script provides atomicity for the counter |
-| 15.4.2 | Pass (after fix) | NamedTemporaryFile eliminates TOCTOU gap |
-| 15.4.3 | Partial | The application has no other shared locking patterns currently; this should be revisited if additional shared resources are added |
-| 15.4.4 | Partial | The submission quota limit exists; process-level resource limits (CPU, memory) for the judge are separate and depend on sandbox configuration |
+> [!WARNING]
+> **Reference Solution** — Complete the lab on your own before consulting this.
 
 ---
 
-## Reference Implementation Notes
+## Task 1 — Fixed Code Analysis Questions
 
-See `code/fixed/scoring.py` and `code/fixed/submission_service.py` for one valid implementation. Key differences from naive approaches:
+**Q1: Why `Decimal("20")` with quotes, not `Decimal(20.0)`?**
+`Decimal(20.0)` converts the float `20.0` first, inheriting its binary representation imprecision: `Decimal(20.0)` gives `Decimal('20')` here but `Decimal(0.1)` gives `Decimal('0.1000000000000000055511151231257827021181583404541015625')`. Always initialize `Decimal` from a string to guarantee exact representation.
 
-- `calculate_penalty_score`: `Decimal` throughout; `ROUND_HALF_UP` via `.quantize()`; `wrong_attempts >= 0` check raises `ValueError`, not silently corrects
-- `increment_submission_count_atomic`: Lua script via `redis.eval()`; key format `sub_count:{user_id}:{contest_id}` scopes per-user per-contest
-- `save_submission`: `NamedTemporaryFile` with `delete=False` (caller deletes after judge completes); `dir=` set to controlled directory, not `/tmp`
+**Q2: Why Redis Lua script rather than a Python-level lock?**
+A Python-level lock (e.g., `asyncio.Lock`) only works within a single process. CODING WAR runs multiple FastAPI workers (and possibly multiple hosts). A lock in worker 1 is invisible to worker 2. The Redis Lua script runs atomically inside Redis itself — the single Redis server serializes all operations regardless of how many app workers are calling it simultaneously. This is the correct tool for distributed atomic operations.
+
+**Q3: `_MAX_REASONABLE_EXECUTION_MS = 60_000` — business justification:**
+No competitive programming problem has a legitimate time limit exceeding 60 seconds (most are 1–5 seconds). Any value above 60,000ms is either a bug in the judge or a manipulation attempt. The bound is a defense-in-depth check: even if the judge process is compromised and returns a fabricated time, this validation prevents the fabricated value from propagating through business logic.
+
+> **Design Note:** Per SDD PER-03, judging response time must be < 5 seconds. The judge runs with uid=10001 (judge_user per SDD 7.1) in network-isolated containers (network_mode: none per SDD 3.2.2). Test cases are fetched from S3-compatible Storage via pre-signed URLs with 60s TTL (per SDD 4.2).
+
+---
+
+## Task 2 — TOCTOU Fixed Code Analysis
+
+**Q1: Why `SUBMISSION_TEMP_DIR` matters?**
+Using `/tmp` allows any process on the system (including other contest submissions running concurrently) to pre-create a symlink at the predictable path `/tmp/submission_{id}.py` before the write. A dedicated directory owned by the judge service (mode 700) means only the judge process can write there — an attacker running as a different user cannot pre-place a symlink.
+
+**Q2: Why `pathlib.Path` instead of `str`?**
+`Path` objects make path-traversal bugs harder. You can't accidentally concatenate a `Path` with a user-supplied string using `+`. Operations like `.is_absolute()`, `.parent`, `.suffix` work correctly without string manipulation. It's a type-level guardrail that makes the code's intent explicit.
+
+**Q3: `delete=False` and cleanup responsibility:**
+`delete=False` means the file persists after the `with` block closes. Without this, the file is deleted when the context manager exits — before the judge has a chance to read it. The caller (JudgeService) is responsible for calling `path.unlink()` after the judge completes (or fails). This should be done in a `finally` block to ensure cleanup even on exceptions.
+
+---
+
+## Code References
+
+| File | Role | Link |
+|------|------|------|
+| Vulnerable scoring logic | Float precision + TOCTOU counter bugs | [`code/vulnerable/scoring.py`](../code/vulnerable/scoring.py) |
+| Fixed scoring logic | Decimal + atomic Redis Lua script | [`code/fixed/scoring.py`](../code/fixed/scoring.py) |
+| Vulnerable submission service | TOCTOU temp file bug | [`code/vulnerable/submission_service.py`](../code/vulnerable/submission_service.py) |
+| Fixed submission service | NamedTemporaryFile atomic | [`code/fixed/submission_service.py`](../code/fixed/submission_service.py) |
 
 ---
 

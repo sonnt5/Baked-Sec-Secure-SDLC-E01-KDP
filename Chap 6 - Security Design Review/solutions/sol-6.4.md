@@ -9,7 +9,7 @@
 
 | Data Entity | Examples | Class | Owner | Protection Goals | Design Controls |
 |-------------|---------|-------|-------|-----------------|----------------|
-| **Session Tokens (Redis)** | JWT refresh tokens, session state | **HVA** | Auth Service | C: must not be accessible outside Redis; I: token must not be forgeable; A: Redis high availability | Redis accessible only from app server (not internet); token stored as hash if persistence needed; TTL enforced; revocation via jti blocklist |
+| **Session Tokens (Redis)** | JWT refresh tokens, session state | **HVA** | Auth Service | C: must not be accessible outside Redis; I: token must not be forgeable; A: Redis high availability for session continuity | Redis accessible only from app server (not internet); token stored as hash if persistence needed; TTL enforced; revocation via jti blocklist |
 
 ---
 
@@ -18,8 +18,8 @@
 The most important gaps identified:
 
 **Source Code Submission gaps:**
-1. DEK zeroing in Python is "best effort" — CPython's garbage collector may delay actual memory clearing. Mitigation: use `ctypes.memset` or `mlock`/`mprotect` for production security-critical code.
-2. Admin export function lacks 2-person approval — a single admin can export all submissions without oversight. Must be implemented before production.
+1. DEK zeroing in Python is "best effort" — CPython's garbage collector may delay actual memory clearing. Mitigation: use `ctypes.memset` or `mlock`/`mprotect` for production security-critical code to ensure immediate memory zeroing.
+2. Admin export function lacks 2-person approval (not in current SRS 3.4) — a single admin can export all submissions without oversight. Must be designed and implemented before production.
 
 **User Credentials gaps:**
 1. Account lockout not yet implemented — TH-01 critical gap. The entire Collect → Use (Auth) stage is vulnerable to brute force.
@@ -29,6 +29,9 @@ The most important gaps identified:
 ---
 
 ## Task 3 — Token Vault Resolution Flow Description
+
+> [!NOTE]
+> **Design Note:** Token Vault Service is a new component introduced for privacy-aware logging (not in original SDD). It provides opaque token resolution with access control and audit logging.
 
 ```
 Request (with opaque token)
@@ -41,7 +44,7 @@ Token Vault Service (privileged zone)
    - Elevated: resolve usr_public_id → email (requires justification)
    - Break-glass: resolve any token → PII (requires 2-person approval + reason)
         ↓
-3. Log resolution event:
+3. Log resolution event to admin_audit_logs:
    {resolver_id, token_type, resolution_reason, timestamp, approver_if_needed}
         ↓
 Return resolved value (with minimum necessary fields only)
@@ -54,9 +57,11 @@ Every resolution is append-only in the audit log. Break-glass access triggers an
 ## Task 4 — Log Schema Analysis
 
 The provided log schema correctly excludes: email, full_name, phone, password, access_token, JWT, raw IP address, source code, full request body. Key design decisions:
-- `client_ip_hash` using SHA-256 prefix (16 chars) allows correlation across requests without storing PII, while still preventing exact IP reconstruction.
+- `client_ip_hash` using SHA-256 prefix (16 chars) allows correlation across requests without storing PII, while still preventing exact IP reconstruction (per privacy-aware logging design).
 - `user_agent_class` (bucketed) provides browser/mobile/bot signal without storing the full user agent string that could enable fingerprinting.
 - `object_id` is the opaque public_id — investigators can look up submissions by their public ID without needing DB internal integer keys.
+
+Note: admin_audit_logs table (per SDD 7.2) stores IP addresses for admin action traceability. This log schema represents general application logging with enhanced privacy.
 
 ---
 
