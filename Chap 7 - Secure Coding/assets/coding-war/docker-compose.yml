@@ -1,0 +1,124 @@
+version: '3.8'
+
+services:
+  # Judge Sandbox Image — built here so 'docker compose build' creates coding-war-judge:latest
+  # The judge-worker uses this image to spin up per-submission containers.
+  judge-sandbox:
+    build:
+      context: ./judge
+      dockerfile: Dockerfile
+    image: coding-war-judge:latest
+    restart: "no"   # not a persistent service, just needs the image to exist
+
+
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: coding-war-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: coding_war
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis Cache & Queue
+  redis:
+    image: redis:7-alpine
+    container_name: coding-war-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Backend API Server (Python/FastAPI)
+  backend:
+    build:
+      context: ./backend-py
+      dockerfile: Dockerfile.dev
+    container_name: coding-war-backend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgresql+asyncpg://postgres:password@postgres:5432/coding_war
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      JWT_SECRET: dev-secret-change-in-production
+      JWT_REFRESH_SECRET: dev-refresh-secret-change-in-production
+      S3_ENDPOINT: http://minio:9000
+      CORS_ORIGIN: http://localhost:5173,http://localhost:5174
+      LOG_LEVEL: DEBUG
+    volumes:
+      - ./backend-py:/app
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >
+      sh -c "cd /app &&
+             PYTHONPATH=/app alembic upgrade head &&
+             PYTHONPATH=/app python seed_problems.py || true &&
+             uvicorn app.main:app --host 0.0.0.0 --port 3000 --reload"
+
+  # Judge Worker (Celery)
+  judge-worker:
+    build:
+      context: ./backend-py
+      dockerfile: Dockerfile.dev
+    container_name: coding-war-judge
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:password@postgres:5432/coding_war
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      JUDGE_CONCURRENCY: 3
+      JUDGE_TIMEOUT: 30000
+    volumes:
+      - ./backend-py:/app
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: celery -A app.worker worker --loglevel=info --concurrency=3
+
+  # Frontend (Vite + React)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    container_name: coding-war-frontend
+    restart: unless-stopped
+    ports:
+      - "5173:5173"
+    environment:
+      VITE_API_URL: http://localhost:3000
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
+  redis_data:
+
